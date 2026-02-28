@@ -427,11 +427,6 @@ window.parent.postMessage({
 				logFn(`[MCP App${logger ? ` - ${logger}` : ''}] ${level}:`, data);
 			};
 
-			bridge.onmessage = async ({ role, content }) => {
-				console.log(`[MCP App] Message (${role}):`, content);
-				return {};
-			};
-
 			bridge.oncalltool = async (params): Promise<CallToolResult> => {
 				try {
 					const result = await callTool(token, serverId, params.name, params.arguments || {});
