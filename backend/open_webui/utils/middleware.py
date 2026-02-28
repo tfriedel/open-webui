@@ -1194,7 +1194,7 @@ async def chat_completion_tools_handler(
                             for server_conn in request.app.state.config.TOOL_SERVER_CONNECTIONS:
                                 if (
                                     server_conn.get("type", "") == "mcp"
-                                    and server_conn.get("config", {}).get("id", "") == server_id
+                                    and server_conn.get("info", {}).get("id", "") == server_id
                                 ):
                                     server_mcp_apps_enabled = server_conn.get(
                                         "config", {}
@@ -1238,7 +1238,7 @@ async def chat_completion_tools_handler(
                                     "choices": [
                                         {
                                             "message": {
-                                                "content": serialized
+                                                "content": result_text
                                             }
                                         }
                                     ],
@@ -1291,10 +1291,10 @@ async def chat_completion_tools_handler(
                 await tool_call_handler(result)
 
         except Exception as e:
-            log.debug(f"Error: {e}")
+            log.error(f"Error in tool call handling: {e}", exc_info=True)
             content = None
     except Exception as e:
-        log.debug(f"Error: {e}")
+        log.error(f"Error in tool completion: {e}", exc_info=True)
         content = None
 
     log.debug(f"tool_contexts: {sources}")
@@ -4245,7 +4245,7 @@ async def streaming_chat_response_handler(response, ctx):
                                 for server_conn in request.app.state.config.TOOL_SERVER_CONNECTIONS:
                                     if (
                                         server_conn.get("type", "") == "mcp"
-                                        and server_conn.get("config", {}).get("id", "") == server_id
+                                        and server_conn.get("info", {}).get("id", "") == server_id
                                     ):
                                         # Check per-server enable_mcp_apps flag (default True)
                                         server_mcp_apps_enabled = server_conn.get(
@@ -4280,6 +4280,7 @@ async def streaming_chat_response_handler(response, ctx):
                                 else {}
                             ),
                         }
+                        results.append(result_entry)
 
                     # Update function_call statuses and append function_call_output items
                     for tc in response_tool_calls:

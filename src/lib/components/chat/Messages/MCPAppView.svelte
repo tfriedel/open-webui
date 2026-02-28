@@ -267,19 +267,30 @@ window.parent.postMessage({
 	function formatToolResult(result: unknown): CallToolResult {
 		// If already in CallToolResult format
 		if (result && typeof result === 'object' && 'content' in result && Array.isArray((result as CallToolResult).content)) {
-			return result as CallToolResult;
+			// Ensure each content item has annotations (required by ext-apps SDK Zod schema)
+			const content = (result as CallToolResult).content.map((item) => ({
+				...item,
+				annotations: (item as Record<string, unknown>).annotations ?? {}
+			}));
+			return {
+				...(result as CallToolResult),
+				content,
+				structuredContent: (result as Record<string, unknown>).structuredContent ?? {}
+			} as CallToolResult;
 		}
 
 		// Wrap in text content
 		const textContent: TextContent = {
 			type: 'text',
-			text: typeof result === 'string' ? result : JSON.stringify(result)
+			text: typeof result === 'string' ? result : JSON.stringify(result),
+			annotations: {}
 		};
 
 		return {
 			content: [textContent],
+			structuredContent: {},
 			isError: false
-		};
+		} as CallToolResult;
 	}
 
 	/**
@@ -416,17 +427,23 @@ window.parent.postMessage({
 				logFn(`[MCP App${logger ? ` - ${logger}` : ''}] ${level}:`, data);
 			};
 
+			bridge.onmessage = async ({ role, content }) => {
+				console.log(`[MCP App] Message (${role}):`, content);
+				return {};
+			};
+
 			bridge.oncalltool = async (params): Promise<CallToolResult> => {
 				try {
 					const result = await callTool(token, serverId, params.name, params.arguments || {});
 					return formatToolResult(result);
 				} catch (e) {
 					console.error('MCPAppView: Tool call failed:', e);
-					const errorContent: TextContent = { type: 'text', text: String(e) };
+					const errorContent: TextContent = { type: 'text', text: String(e), annotations: {} };
 					return {
 						content: [errorContent],
+						structuredContent: {},
 						isError: true
-					};
+					} as CallToolResult;
 				}
 			};
 
