@@ -44,6 +44,7 @@
 		pinnedChats,
 		showEmbeds
 	} from '$lib/stores';
+	import { mcpApps } from '$lib/stores/mcpApps';
 
 	import {
 		convertMessagesToHistory,
@@ -1970,7 +1971,16 @@
 				: undefined,
 			..._messages.map((message) => ({
 				...message,
-				content: processDetails(message.content),
+				content: processDetails(message.content, $mcpApps),
+				// Also process merged content so it doesn't override the substitution
+				...(message.merged?.content
+					? {
+							merged: {
+								...message.merged,
+								content: processDetails(message.merged.content, $mcpApps)
+							}
+						}
+					: {}),
 				// Include output for temp chats (backend will use it and strip before LLM)
 				...(message.output ? { output: message.output } : {})
 			}))

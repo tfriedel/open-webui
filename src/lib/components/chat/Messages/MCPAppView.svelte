@@ -10,7 +10,8 @@
 	import {
 		updateAppState,
 		updateAppHeight,
-		updateAppDisplayMode
+		updateAppDisplayMode,
+		updateAppModelContext
 	} from '$lib/stores/mcpApps';
 	import type {
 		MCPAppResource,
@@ -78,7 +79,8 @@
 		openLinks: {},
 		serverTools: { listChanged: false },
 		message: { text: {} },
-		logging: {}
+		logging: {},
+		updateModelContext: { text: {} }
 	};
 
 	// Host info
@@ -440,6 +442,20 @@ window.parent.postMessage({
 						isError: true
 					} as CallToolResult;
 				}
+			};
+
+			bridge.onupdatemodelcontext = async (params: {
+				content?: Array<{ type: string; text?: string }>;
+			}) => {
+				const content = params.content || [];
+				const textParts = content
+					.filter((c) => c.type === 'text' && c.text)
+					.map((c) => c.text as string);
+				const contextText = textParts.join('\n');
+				if (contextText) {
+					updateAppModelContext(instanceId, contextText);
+				}
+				return {};
 			};
 
 			// NOW add iframe to DOM - this triggers the proxy script

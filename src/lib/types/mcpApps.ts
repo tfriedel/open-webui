@@ -89,6 +89,9 @@ export interface MCPAppInstance {
 	/** Tool invocation ID for result correlation */
 	toolCallId?: string | number;
 
+	/** Latest model context from the app (overrides tool result for LLM) */
+	modelContext?: string;
+
 	/** Timestamp of creation */
 	createdAt: number;
 }

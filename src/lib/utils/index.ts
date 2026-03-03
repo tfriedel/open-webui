@@ -34,7 +34,7 @@ export const formatNumber = (num: number): string => {
 	);
 };
 
-function escapeRegExp(string: string): string {
+export function escapeRegExp(string: string): string {
 	return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
@@ -862,7 +862,7 @@ export const removeAllDetails = (content) => {
 	});
 };
 
-export const processDetails = (content) => {
+export const processDetails = (content, mcpAppsMap?: Map<string, any>) => {
 	content = removeDetails(content, ['reasoning', 'code_interpreter']);
 
 	// This regex matches <details> tags with type="tool_calls" and captures their attributes to convert them to a string
@@ -877,8 +877,25 @@ export const processDetails = (content) => {
 				attributes[attributeMatch[1]] = attributeMatch[2];
 			}
 
-			if (attributes.result) {
-				content = content.replace(match, unescapeHtml(attributes.result));
+			// Check live mcpApps store for the latest model context (highest priority)
+			let liveModelContext: string | undefined;
+			if (mcpAppsMap && attributes.id) {
+				for (const app of mcpAppsMap.values()) {
+					if (String(app.toolCallId) === attributes.id && app.modelContext) {
+						liveModelContext = app.modelContext;
+						break;
+					}
+				}
+			}
+
+			if (liveModelContext) {
+				// Use function replacement to avoid $-pattern interpretation in dollar amounts
+				content = content.replace(match, () => liveModelContext);
+			} else {
+				const effectiveResult = attributes.model_context || attributes.result;
+				if (effectiveResult) {
+					content = content.replace(match, () => unescapeHtml(effectiveResult));
+				}
 			}
 		}
 	}

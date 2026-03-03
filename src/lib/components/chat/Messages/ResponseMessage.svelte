@@ -24,11 +24,13 @@
 		TTSWorker,
 		user
 	} from '$lib/stores';
+	import { mcpApps } from '$lib/stores/mcpApps';
 	import { synthesizeOpenAISpeech } from '$lib/apis/audio';
 	import { imageGenerations } from '$lib/apis/images';
 	import {
 		copyToClipboard as _copyToClipboard,
 		approximateToHumanReadable,
+		escapeRegExp,
 		getMessageContentParts,
 		sanitizeResponseContent,
 		createMessagesList,
@@ -172,6 +174,88 @@
 	let loadingSpeech = false;
 
 	let showRateComment = false;
+
+	// --- MCP App model context sync ---
+	const modelContextDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+	const lastWrittenContexts = new Map<string, string>();
+
+	function escapeHtmlAttr(text: string): string {
+		return text
+			.replace(/&/g, '&amp;')
+			.replace(/"/g, '&quot;')
+			.replace(/</g, '&lt;')
+			.replace(/>/g, '&gt;');
+	}
+
+	function setModelContextAttribute(
+		content: string,
+		toolCallId: string,
+		contextText: string
+	): string {
+		const escaped = escapeHtmlAttr(contextText);
+		// Match <details ... id="toolCallId" ...> and insert/update model_context attribute
+		const detailsRegex = new RegExp(
+			`(<details\\s+[^>]*id="${escapeRegExp(toolCallId)}"[^>]*?)\\s*>`,
+			'is'
+		);
+		const match = content.match(detailsRegex);
+		if (!match) return content;
+
+		let tag = match[1];
+		// Remove existing model_context attribute if present
+		tag = tag.replace(/\s+model_context="[^"]*"/, '');
+		// Add new model_context attribute
+		tag += ` model_context="${escaped}">`;
+		return content.replace(match[0], () => tag);
+	}
+
+	$: if ($mcpApps) {
+		// Check if any app's modelContext is relevant to this message
+		for (const app of $mcpApps.values()) {
+			if (!app.modelContext || !app.toolCallId) continue;
+			const toolCallIdStr = String(app.toolCallId);
+			// Only process if this message contains the tool call
+			if (!message?.content?.includes(`id="${toolCallIdStr}"`)) continue;
+			// Skip if we already wrote this exact context
+			if (lastWrittenContexts.get(toolCallIdStr) === app.modelContext) continue;
+
+			// Debounce to coalesce rapid updates (per toolCallId)
+			const existingTimer = modelContextDebounceTimers.get(toolCallIdStr);
+			if (existingTimer) clearTimeout(existingTimer);
+			const contextToWrite = app.modelContext;
+			const callId = toolCallIdStr;
+			modelContextDebounceTimers.set(
+				callId,
+				setTimeout(() => {
+					const msg = history.messages[messageId];
+
+					// Update content HTML (model_context attribute on <details> tag)
+					const updatedContent = setModelContextAttribute(msg.content, callId, contextToWrite);
+					const contentChanged = updatedContent !== msg.content;
+					if (contentChanged) {
+						msg.content = updatedContent;
+					}
+
+					// Update output items so backend sees the latest tool result
+					let outputChanged = false;
+					if (Array.isArray(msg.output)) {
+						for (const item of msg.output) {
+							if (item.type === 'function_call_output' && String(item.call_id) === callId) {
+								item.output = [{ type: 'input_text', text: contextToWrite }];
+								outputChanged = true;
+								break;
+							}
+						}
+					}
+
+					if (contentChanged || outputChanged) {
+						lastWrittenContexts.set(callId, contextToWrite);
+						updateChat();
+					}
+				}, 500)
+			);
+		}
+	}
 
 	const copyToClipboard = async (text) => {
 		text = removeAllDetails(text);
@@ -592,6 +676,9 @@
 		if (buttonsContainerElement) {
 			buttonsContainerElement.removeEventListener('wheel', buttonsWheelHandler);
 		}
+
+		for (const timer of modelContextDebounceTimers.values()) clearTimeout(timer);
+		modelContextDebounceTimers.clear();
 
 		if (contentContainerElement) {
 			contentContainerElement.removeEventListener('copy', contentCopyHandler);

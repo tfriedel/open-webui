@@ -197,10 +197,11 @@ def convert_output_to_messages(output: list, raw: bool = False) -> list[dict]:
             flush_pending()
 
             # Extract text from output content parts
+            # Accept both "input_text" (standard) and "text" (MCP app) types
             output_parts = item.get("output", [])
             content = ""
             for part in output_parts:
-                if part.get("type") == "input_text":
+                if part.get("type") in ("input_text", "text"):
                     content += part.get("text", "")
 
             messages.append(

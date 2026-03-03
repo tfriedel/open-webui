@@ -394,6 +394,7 @@ async def get_tools(
                             "spec": spec,
                             # Misc info
                             "type": "external",
+                            "server_id": server_id,
                         }
 
                         # Handle function name collisions

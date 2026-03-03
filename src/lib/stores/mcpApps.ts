@@ -135,6 +135,13 @@ export function updateAppTitle(instanceId: string, title: string): void {
 }
 
 /**
+ * Update app model context (sent by the app via updateModelContext).
+ */
+export function updateAppModelContext(instanceId: string, modelContext: string): void {
+	updateApp(instanceId, { modelContext });
+}
+
+/**
  * Remove an app instance from the store.
  */
 export function removeApp(instanceId: string): void {

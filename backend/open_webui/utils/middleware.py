@@ -448,6 +448,46 @@ def serialize_output(output: list) -> str:
     return content.strip()
 
 
+
+def is_mcp_server_apps_enabled(server_id: str, tool_server_connections: list) -> bool:
+    """Check the per-server MCP Apps enable flag (defaults to True)."""
+    for server_conn in tool_server_connections:
+        if (
+            server_conn.get("type", "") == "mcp"
+            and server_conn.get("info", {}).get("id", "") == server_id
+        ):
+            return server_conn.get("config", {}).get("enable_mcp_apps", True)
+    return True
+
+
+def make_mcp_tool_output(
+    call_id: str,
+    name: str,
+    arguments: dict | str,
+    result_text: str,
+    mcp_app_meta: dict,
+) -> list:
+    """Build canonical function_call / function_call_output pair for MCP apps.
+
+    serialize_output expects these two items paired by call_id to render
+    the <details> tag correctly.
+    """
+    return [
+        {
+            "type": "function_call",
+            "call_id": call_id,
+            "name": name,
+            "arguments": arguments,
+        },
+        {
+            "type": "function_call_output",
+            "call_id": call_id,
+            "output": [{"type": "input_text", "text": result_text}],
+            "mcp_app": mcp_app_meta,
+        },
+    ]
+
+
 def deep_merge(target, source):
     """
     Merge source into target recursively (returning new structure).
@@ -1185,27 +1225,21 @@ async def chat_completion_tools_handler(
                         resource_uri = ui_meta.get("resourceUri", "")
 
                         if resource_uri and resource_uri.startswith("ui://"):
-                            # Extract server_id from tool_function_name (format: serverId_toolName)
-                            parts = tool_function_name.split("_", 1)
-                            server_id = parts[0] if len(parts) > 1 else ""
+                            server_id = tool.get("server_id", "")
 
                             # Check per-server MCP Apps enable flag
-                            server_mcp_apps_enabled = True
-                            for server_conn in request.app.state.config.TOOL_SERVER_CONNECTIONS:
-                                if (
-                                    server_conn.get("type", "") == "mcp"
-                                    and server_conn.get("info", {}).get("id", "") == server_id
-                                ):
-                                    server_mcp_apps_enabled = server_conn.get(
-                                        "config", {}
-                                    ).get("enable_mcp_apps", True)
-                                    break
+                            server_mcp_apps_enabled = is_mcp_server_apps_enabled(
+                                server_id,
+                                request.app.state.config.TOOL_SERVER_CONNECTIONS,
+                            )
 
                             if server_mcp_apps_enabled:
                                 mcp_app_meta = {
                                     "resourceUri": resource_uri,
                                     "serverId": server_id,
-                                    "visibility": ui_meta.get("visibility", ["model", "app"]),
+                                    "visibility": ui_meta.get(
+                                        "visibility", ["model", "app"]
+                                    ),
                                     "permissions": ui_meta.get("permissions", {}),
                                 }
 
@@ -1217,31 +1251,17 @@ async def chat_completion_tools_handler(
                         tool_call_id = tool_call.get("id") or str(uuid4())
                         # Format tool_result as MCP content format
                         result_text = str(tool_result) if tool_result else ""
-                        mcp_output = [
-                            {
-                                "type": "function_call",
-                                "call_id": tool_call_id,
-                                "name": tool_function_name,
-                                "arguments": tool_function_params,
-                            },
-                            {
-                                "type": "function_call_output",
-                                "call_id": tool_call_id,
-                                "output": [{"type": "text", "text": result_text}],
-                                "mcp_app": mcp_app_meta,
-                            }
-                        ]
+                        mcp_output = make_mcp_tool_output(
+                            tool_call_id,
+                            tool_function_name,
+                            tool_function_params,
+                            result_text,
+                            mcp_app_meta,
+                        )
                         await event_emitter(
                             {
                                 "type": "chat:completion",
                                 "data": {
-                                    "choices": [
-                                        {
-                                            "message": {
-                                                "content": result_text
-                                            }
-                                        }
-                                    ],
                                     "output": mcp_output,
                                 },
                             }
