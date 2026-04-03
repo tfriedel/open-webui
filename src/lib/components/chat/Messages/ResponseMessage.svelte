@@ -702,6 +702,7 @@
 									<div class="my-2 w-full" id={`${message.id}-embeds-${idx}`}>
 										<FullHeightIframe
 											src={embed}
+											serverId={message.mcpServerId ?? null}
 											allowScripts={true}
 											allowForms={true}
 											allowSameOrigin={$settings?.iframeSandboxAllowSameOrigin ?? false}

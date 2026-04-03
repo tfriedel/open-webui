@@ -451,6 +451,9 @@
 					message.files = data.files;
 				} else if (type === 'chat:message:embeds' || type === 'embeds') {
 					message.embeds = data.embeds;
+					if (data.mcpServerId) {
+						message.mcpServerId = data.mcpServerId;
+					}
 
 					// Auto-scroll to the embed once it's rendered in the DOM
 					await tick();

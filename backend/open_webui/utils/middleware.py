@@ -443,8 +443,12 @@ def serialize_output(output: list) -> str:
                         result_text += str(output_text) if not isinstance(output_text, str) else output_text
                 files = result_item.get('files')
                 embeds = result_item.get('embeds', '')
+                mcp_app = result_item.get('mcp_app')
 
-                content += f'<details type="tool_calls" done="true" id="{call_id}" name="{name}" arguments="{html.escape(json.dumps(arguments))}" result="{html.escape(json.dumps(result_text, ensure_ascii=False))}" files="{html.escape(json.dumps(files)) if files else ""}" embeds="{html.escape(json.dumps(embeds))}">\n<summary>Tool Executed</summary>\n</details>\n'
+                # Build mcp_app attribute if present
+                mcp_app_attr = f' mcp_app="{html.escape(json.dumps(mcp_app))}"' if mcp_app else ''
+
+                content += f'<details type="tool_calls" done="true" id="{call_id}" name="{name}" arguments="{html.escape(json.dumps(arguments))}" result="{html.escape(json.dumps(result_text, ensure_ascii=False))}" files="{html.escape(json.dumps(files)) if files else ""}" embeds="{html.escape(json.dumps(embeds))}"{mcp_app_attr}>\n<summary>Tool Executed</summary>\n</details>\n'
             else:
                 content += f'<details type="tool_calls" done="false" id="{call_id}" name="{name}" arguments="{html.escape(json.dumps(arguments))}">\n<summary>Executing...</summary>\n</details>\n'
 
@@ -4216,12 +4220,28 @@ async def streaming_chat_response_handler(response, ctx):
                             except Exception as e:
                                 log.exception(f'Error extracting citation source: {e}')
 
+                        # Extract MCP app metadata if this is an MCP tool with UI resource
+                        mcp_app_meta = None
+                        if tool_type == 'mcp' and tool:
+                            spec = tool.get('spec', {})
+                            tool_meta = spec.get('_meta', {})
+                            ui_meta = tool_meta.get('ui', {})
+                            resource_uri = ui_meta.get('resourceUri') or tool_meta.get('ui/resourceUri')
+                            if resource_uri and resource_uri.startswith('ui://'):
+                                server_id = tool.get('server_id', '')
+                                if server_id:
+                                    mcp_app_meta = {
+                                        'resourceUri': resource_uri,
+                                        'serverId': server_id,
+                                    }
+
                         results.append(
                             {
                                 'tool_call_id': tool_call_id,
                                 'content': str(tool_result) if tool_result else '',
                                 **({'files': tool_result_files} if tool_result_files else {}),
                                 **({'embeds': tool_result_embeds} if tool_result_embeds else {}),
+                                **({'mcp_app': mcp_app_meta} if mcp_app_meta else {}),
                             }
                         )
 
@@ -4259,6 +4279,7 @@ async def streaming_chat_response_handler(response, ctx):
                                 'status': 'completed',
                                 **({'files': display_files} if display_files else {}),
                                 **({'embeds': result.get('embeds')} if result.get('embeds') else {}),
+                                **({'mcp_app': result.get('mcp_app')} if result.get('mcp_app') else {}),
                             }
                         )
 

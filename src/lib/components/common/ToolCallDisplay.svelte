@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { decode } from 'html-entities';
 	import { v4 as uuidv4 } from 'uuid';
+	import { onMount, onDestroy } from 'svelte';
 
 	import { getContext } from 'svelte';
 	const i18n = getContext('i18n');
@@ -17,6 +18,9 @@
 	import Image from './Image.svelte';
 	import FullHeightIframe from './FullHeightIframe.svelte';
 	import { settings } from '$lib/stores';
+	import { readResource } from '$lib/apis/mcp';
+	import { createAppInstance, addApp, updateAppModelContext, removeApp } from '$lib/stores/mcpApps';
+	import type { MCPAppResource } from '$lib/types/mcpApps';
 
 	export let id: string = '';
 	export let attributes: {
@@ -28,6 +32,7 @@
 		files?: string;
 		embeds?: string;
 		done?: string;
+		mcp_app?: string;
 	} = {};
 
 	export let open = false;
@@ -85,10 +90,178 @@
 
 	$: parsedArgs = parseArguments(args);
 	$: parsedResult = parseJSONString(result);
+
+	// MCP App state
+	let mcpApp: {
+		resourceUri: string;
+		serverId: string;
+	} | null = null;
+	let mcpEmbedHtml: string | null = null;
+	let mcpInstanceId: string | null = null;
+	let mcpLoading = false;
+	let mcpError: string | null = null;
+
+	// Parse MCP app attribute
+	$: {
+		if (attributes?.mcp_app) {
+			try {
+				const parsed = JSON.parse(decode(attributes.mcp_app));
+				if (parsed?.resourceUri && parsed?.serverId) {
+					mcpApp = parsed;
+				}
+			} catch (e) {
+				console.error('Failed to parse mcp_app attribute:', e);
+			}
+		}
+	}
+
+	// Fetch MCP resource and prepare embed HTML
+	async function loadMcpResource() {
+		if (!mcpApp) return;
+
+		mcpLoading = true;
+		mcpError = null;
+
+		try {
+			const token = localStorage.token;
+			if (!token) {
+				throw new Error('No auth token available');
+			}
+
+			const resource = await readResource(token, mcpApp.serverId, mcpApp.resourceUri);
+
+			// Create store entry for model context tracking
+			const instance = createAppInstance({
+				serverId: mcpApp.serverId,
+				toolName: attributes.name || 'MCP App',
+				resource: resource,
+				toolCallId: attributes.id
+			});
+			mcpInstanceId = instance.instanceId;
+			addApp(instance);
+
+			let html = resource.content || '';
+
+			// Inject tool data globals, server ID, and a height reporter.
+			// tool-result is sent from the parent (FullHeightIframe) via postMessage
+			// rather than from an injected shim, to avoid double-encoding and
+			// synthetic MessageEvent issues with the SDK transport.
+			//
+			// Height reporter: The SDK's autoResize relies on ResizeObserver on
+			// html/body, but apps using overflow:hidden clamp body size to the
+			// viewport, so ResizeObserver never fires after render. We inject a
+			// MutationObserver on #root that sends the actual content height to
+			// the parent when the app renders.
+			const dataScript =
+				`<script>` +
+				`window.__MCP_TOOL_RESULT__=${JSON.stringify(result || '')};` +
+				`window.__MCP_TOOL_ARGS__=${args || '{}'};` +
+				`window.__MCP_SERVER_ID__=${JSON.stringify(mcpApp.serverId)};` +
+				`window.parent.postMessage({type:"mcp:server-id",serverId:${JSON.stringify(mcpApp.serverId)}},"*");` +
+				// Height reporter: observe #root for content changes and report height
+				`(function(){` +
+				`var lastH=0;` +
+				`function report(){` +
+				`var el=document.getElementById("root")||document.body;` +
+				`var h=Math.max(el.scrollHeight,el.offsetHeight);` +
+				`if(h>0&&h!==lastH){` +
+				`lastH=h;` +
+				`window.parent.postMessage({type:"iframe:height",height:h},"*");` +
+				`}` +
+				`}` +
+				`var target=document.getElementById("root");` +
+				`if(target){` +
+				`new MutationObserver(function(){requestAnimationFrame(report)})` +
+				`.observe(target,{childList:true,subtree:true,attributes:true});` +
+				`}else{` +
+				`document.addEventListener("DOMContentLoaded",function(){` +
+				`var t=document.getElementById("root");` +
+				`if(t)new MutationObserver(function(){requestAnimationFrame(report)})` +
+				`.observe(t,{childList:true,subtree:true,attributes:true});` +
+				`});` +
+				`}` +
+				`setInterval(report,500);` +
+				`})();` +
+				`<\/script>`;
+
+			if (html.includes('<head>')) {
+				html = html.replace('<head>', '<head>\n' + dataScript);
+			} else {
+				html = dataScript + html;
+			}
+
+			mcpEmbedHtml = html;
+		} catch (e) {
+			console.error('Failed to load MCP resource:', e);
+			mcpError = String(e);
+		} finally {
+			mcpLoading = false;
+		}
+	}
+
+	// Load resource when component mounts if mcpApp is present
+	onMount(() => {
+		if (mcpApp && isDone) {
+			loadMcpResource();
+		}
+	});
+
+	onDestroy(() => {
+		if (mcpInstanceId) {
+			removeApp(mcpInstanceId);
+		}
+	});
+
+	// Also react to mcpApp changes
+	$: if (mcpApp && isDone && !mcpEmbedHtml && !mcpLoading && !mcpError) {
+		loadMcpResource();
+	}
 </script>
 
 <div {id} class={className}>
-	{#if !grouped && embeds && Array.isArray(embeds) && embeds.length > 0}
+	{#if mcpApp && isDone}
+		<!-- MCP App Mode: Show MCP App UI -->
+		<div class="py-1 w-full">
+			<div class="w-full text-xs text-gray-500 mb-2">
+				<div class="">
+					{attributes.name}
+				</div>
+			</div>
+
+			{#if mcpLoading}
+				<div
+					class="flex items-center justify-center p-4 text-gray-500 border border-gray-200 dark:border-gray-700 rounded-lg"
+				>
+					<Spinner className="size-4 mr-2" />
+					<span>{$i18n.t('Loading MCP App...')}</span>
+				</div>
+			{:else if mcpError}
+				<div
+					class="p-4 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 rounded-lg border border-red-200 dark:border-red-800"
+				>
+					<strong>{$i18n.t('Failed to load app')}:</strong>
+					{mcpError}
+				</div>
+			{:else if mcpEmbedHtml}
+				<FullHeightIframe
+					src={mcpEmbedHtml}
+					{args}
+					toolResult={typeof parsedResult === 'object' ? JSON.stringify(parsedResult) : String(parsedResult ?? '')}
+					serverId={mcpApp?.serverId ?? null}
+					initialHeight={600}
+					allowScripts={true}
+					allowForms={$settings?.iframeSandboxAllowForms ?? false}
+					allowSameOrigin={$settings?.iframeSandboxAllowSameOrigin ?? false}
+					allowPopups={true}
+					on:modelcontext={(e) => {
+						if (mcpInstanceId) {
+							updateAppModelContext(mcpInstanceId, e.detail.text);
+						}
+					}}
+				/>
+			{/if}
+		</div>
+	{:else if !grouped && embeds && Array.isArray(embeds) && embeds.length > 0}
 		<!-- Embed Mode: Show iframes without collapsible behavior -->
 		<div class="py-1 w-full cursor-pointer">
 			<div class="w-full text-xs text-gray-500">

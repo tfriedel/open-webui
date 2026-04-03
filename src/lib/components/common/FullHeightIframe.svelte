@@ -1,5 +1,7 @@
 <script lang="ts">
-	import { onDestroy, onMount, tick } from 'svelte';
+	import { createEventDispatcher, onDestroy, onMount, tick } from 'svelte';
+
+	const dispatch = createEventDispatcher();
 
 	// Props
 	export let src: string | null = null; // URL or raw HTML (auto-detected)
@@ -22,6 +24,8 @@
 	export let allowFullscreen = true;
 
 	export let payload = null; // payload to send into the iframe on request
+	export let serverId: string | null = null; // MCP server ID for relaying tool calls
+	export let toolResult: string | null = null; // MCP tool result text to send after tool-input
 
 	let iframe: HTMLIFrameElement | null = null;
 	let iframeSrc: string | null = null;
@@ -144,12 +148,200 @@ window.Chart = parent.Chart; // Chart previously assigned on parent
 		}
 	}
 
+	// Track whether we've responded to MCP Apps init
+	let mcpInitDone = false;
+
 	function onMessage(e: MessageEvent) {
 		if (!iframe || e.source !== iframe.contentWindow) return;
 
 		const data = e.data || {};
 		if (data?.type === 'iframe:height' && typeof data.height === 'number') {
 			iframe.style.height = Math.max(0, data.height) + 'px';
+		}
+
+		// Pick up server ID from embedded MCP app HTML (survives page reloads)
+		if (data?.type === 'mcp:server-id' && data?.serverId && !serverId) {
+			serverId = data.serverId;
+		}
+
+		// MCP Apps: respond to ui/initialize so the SDK's connect() resolves
+		// and features like autoResize activate.
+		if (
+			data?.jsonrpc === '2.0' &&
+			data?.method === 'ui/initialize' &&
+			data?.id != null &&
+			!mcpInitDone
+		) {
+			mcpInitDone = true;
+			iframe.contentWindow?.postMessage(
+				{
+					jsonrpc: '2.0',
+					id: data.id,
+					result: {
+						protocolVersion: data?.params?.protocolVersion || '2026-01-26',
+						hostInfo: { name: 'Open WebUI', version: '1.0.0' },
+						hostCapabilities: {
+							serverTools: { listChanged: false },
+							updateModelContext: { text: {} }
+						},
+						hostContext: {
+							containerDimensions: { height: 600 }
+						}
+					}
+				},
+				'*'
+			);
+			// Send tool-input notification with the tool arguments
+			// so apps waiting on ontoolinput can proceed to render.
+			// args may be double-encoded (JSON string of a JSON string) from
+			// the middleware's html.escape(json.dumps(json.dumps(arguments))).
+			// Unwrap until we get an object.
+			let toolArgs: Record<string, unknown> = {};
+			try {
+				let parsed: unknown = args
+					? typeof args === 'string'
+						? JSON.parse(args)
+						: args
+					: {};
+				while (typeof parsed === 'string') {
+					parsed = JSON.parse(parsed);
+				}
+				if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+					toolArgs = parsed as Record<string, unknown>;
+				}
+			} catch {
+				toolArgs = {};
+			}
+			setTimeout(() => {
+				iframe.contentWindow?.postMessage(
+					{
+						jsonrpc: '2.0',
+						method: 'ui/notifications/tool-input',
+						params: { arguments: toolArgs }
+					},
+					'*'
+				);
+				// Send tool-result from the parent via postMessage so the SDK
+				// transport accepts it (synthetic dispatchEvent can fail).
+				if (toolResult) {
+					setTimeout(() => {
+						const params: Record<string, unknown> = {
+							content: [{ type: 'text', text: toolResult }]
+						};
+						try {
+							const parsed = JSON.parse(toolResult);
+							if (parsed && typeof parsed === 'object') {
+								params.structuredContent = parsed;
+							}
+						} catch {
+							// not JSON, that's fine
+						}
+						iframe.contentWindow?.postMessage(
+							{ jsonrpc: '2.0', method: 'ui/notifications/tool-result', params },
+							'*'
+						);
+					}, 50);
+				}
+			}, 10);
+		}
+
+		// MCP Apps: relay tools/call to the backend MCP API,
+		// handle ui/update-model-context, or return error for
+		// other unsupported JSON-RPC requests.
+		if (
+			data?.jsonrpc === '2.0' &&
+			data?.id != null &&
+			data?.method &&
+			data.method !== 'ui/initialize'
+		) {
+			if (data.method === 'tools/call' && serverId) {
+				const token = localStorage?.token;
+				if (token) {
+					const requestId = data.id;
+					fetch(`/api/v1/mcp/tool/call`, {
+						method: 'POST',
+						headers: {
+							Authorization: `Bearer ${token}`,
+							'Content-Type': 'application/json'
+						},
+						body: JSON.stringify({
+							server_id: serverId,
+							tool_name: data.params?.name,
+							arguments: data.params?.arguments ?? {}
+						})
+					})
+						.then((r) => r.json())
+						.then((result) => {
+							// Strip null values — the Python MCP SDK serializes
+							// Optional fields as null, but the TypeScript SDK's
+							// Zod schemas use z.optional() which rejects null.
+							if (result && typeof result === 'object') {
+								if (Array.isArray(result.content)) {
+									result.content = result.content.map(
+										(item: Record<string, unknown>) => {
+											const clean: Record<string, unknown> = {};
+											for (const [k, v] of Object.entries(item)) {
+												if (v !== null) clean[k] = v;
+											}
+											return clean;
+										}
+									);
+								}
+								for (const key of Object.keys(result)) {
+									if (result[key] === null) delete result[key];
+								}
+							}
+							iframe.contentWindow?.postMessage(
+								{ jsonrpc: '2.0', id: requestId, result },
+								'*'
+							);
+						})
+						.catch(() => {
+							iframe.contentWindow?.postMessage(
+								{
+									jsonrpc: '2.0',
+									id: requestId,
+									error: { code: -32603, message: 'Tool call failed' }
+								},
+								'*'
+							);
+						});
+				}
+			} else if (data.method === 'ui/update-model-context') {
+				const content = data.params?.content || [];
+				const textParts = content
+					.filter((c: { type: string; text?: string }) => c.type === 'text' && c.text)
+					.map((c: { type: string; text?: string }) => c.text as string);
+				const contextText = textParts.join('\n');
+				if (contextText) {
+					dispatch('modelcontext', { text: contextText });
+				}
+				iframe.contentWindow?.postMessage(
+					{ jsonrpc: '2.0', id: data.id, result: {} },
+					'*'
+				);
+			} else {
+				iframe.contentWindow?.postMessage(
+					{
+						jsonrpc: '2.0',
+						id: data.id,
+						error: { code: -32601, message: 'Method not supported in embed mode' }
+					},
+					'*'
+				);
+			}
+		}
+
+		// MCP Apps: handle ui/notifications/size-changed
+		// Ignore height: 0 — apps with 100vh layouts report 0 before
+		// the iframe has an initial height to fill.
+		if (
+			data?.jsonrpc === '2.0' &&
+			data?.method === 'ui/notifications/size-changed' &&
+			typeof data?.params?.height === 'number' &&
+			data.params.height > 0
+		) {
+			iframe.style.height = data.params.height + 'px';
 		}
 
 		// Pong message for testing connectivity
@@ -174,8 +366,13 @@ window.Chart = parent.Chart; // Chart previously assigned on parent
 		requestAnimationFrame(resizeSameOrigin);
 
 		// if arguments are provided, inject them into the iframe window
+		// (only works with allow-same-origin, silently skipped for cross-origin)
 		if (args && iframe?.contentWindow) {
-			(iframe.contentWindow as any).args = args;
+			try {
+				(iframe.contentWindow as any).args = args;
+			} catch {
+				// cross-origin sandbox — args are delivered via postMessage instead
+			}
 		}
 	};
 
