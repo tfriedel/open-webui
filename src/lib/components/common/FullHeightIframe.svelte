@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { createEventDispatcher, onDestroy, onMount, tick } from 'svelte';
+	import { WEBUI_API_BASE_URL } from '$lib/constants';
 
 	const dispatch = createEventDispatcher();
 
@@ -224,16 +225,21 @@ window.Chart = parent.Chart; // Chart previously assigned on parent
 				// transport accepts it (synthetic dispatchEvent can fail).
 				if (toolResult) {
 					setTimeout(() => {
-						const params: Record<string, unknown> = {
-							content: [{ type: 'text', text: toolResult }]
-						};
+						let params: Record<string, unknown>;
 						try {
 							const parsed = JSON.parse(toolResult);
-							if (parsed && typeof parsed === 'object') {
-								params.structuredContent = parsed;
+							if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+								// Structured result — pass through as-is so the app
+								// receives the same shape as /api/v1/mcp/tool/call.
+								params = parsed;
+							} else if (Array.isArray(parsed)) {
+								// Content array from MCP
+								params = { content: parsed };
+							} else {
+								params = { content: [{ type: 'text', text: toolResult }] };
 							}
 						} catch {
-							// not JSON, that's fine
+							params = { content: [{ type: 'text', text: toolResult }] };
 						}
 						iframe.contentWindow?.postMessage(
 							{ jsonrpc: '2.0', method: 'ui/notifications/tool-result', params },
@@ -257,7 +263,7 @@ window.Chart = parent.Chart; // Chart previously assigned on parent
 				const token = localStorage?.token;
 				if (token) {
 					const requestId = data.id;
-					fetch(`/api/v1/mcp/tool/call`, {
+					fetch(`${WEBUI_API_BASE_URL}/mcp/tool/call`, {
 						method: 'POST',
 						headers: {
 							Authorization: `Bearer ${token}`,
