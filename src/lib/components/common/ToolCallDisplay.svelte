@@ -144,6 +144,12 @@
 
 			let html = resource.content || '';
 
+			// Escape for safe embedding inside a <script> tag: replace `</`
+			// with `<\/` so that `</script>` in values can't close the tag.
+			function safeJsonStringify(value: unknown): string {
+				return JSON.stringify(value).replace(/</g, '\\u003c');
+			}
+
 			// Inject tool data globals, server ID, and a height reporter.
 			// tool-result and tool-args are set as globals for immediate access;
 			// tool-result is also sent from the parent (FullHeightIframe) via
@@ -156,10 +162,9 @@
 			// the parent when the app renders.
 			const dataScript =
 				`<script>` +
-				`window.__MCP_TOOL_RESULT__=${JSON.stringify(result || '')};` +
-				`window.__MCP_TOOL_ARGS__=${JSON.stringify(args || '{}')};` +
-				`window.__MCP_SERVER_ID__=${JSON.stringify(mcpApp.serverId)};` +
-				`window.parent.postMessage({type:"mcp:server-id",serverId:${JSON.stringify(mcpApp.serverId)}},"*");` +
+				`window.__MCP_TOOL_RESULT__=${safeJsonStringify(result || '')};` +
+				`window.__MCP_TOOL_ARGS__=${safeJsonStringify(args || '{}')};` +
+				`window.__MCP_SERVER_ID__=${safeJsonStringify(mcpApp.serverId)};` +
 				// Height reporter: observe #root for content changes and report height
 				`(function(){` +
 				`var lastH=0;` +
@@ -249,6 +254,7 @@
 					src={mcpEmbedHtml}
 					{args}
 					toolResult={typeof parsedResult === 'object' ? JSON.stringify(parsedResult) : String(parsedResult ?? '')}
+					isMcpApp={true}
 					serverId={mcpApp?.serverId ?? null}
 					initialHeight={600}
 					allowScripts={true}

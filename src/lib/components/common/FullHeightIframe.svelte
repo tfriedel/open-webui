@@ -24,6 +24,7 @@
 	export let allowFullscreen = true;
 
 	export let payload = null; // payload to send into the iframe on request
+	export let isMcpApp = false; // true only when this iframe hosts an MCP App
 	export let serverId: string | null = null; // MCP server ID for relaying tool calls
 	export let toolResult: string | null = null; // MCP tool result text to send after tool-input
 
@@ -159,14 +160,12 @@ window.Chart = parent.Chart; // Chart previously assigned on parent
 			iframe.style.height = Math.max(0, data.height) + 'px';
 		}
 
-		// Pick up server ID from embedded MCP app HTML (survives page reloads)
-		if (data?.type === 'mcp:server-id' && data?.serverId && !serverId) {
-			serverId = data.serverId;
-		}
-
 		// MCP Apps: respond to ui/initialize so the SDK's connect() resolves
 		// and features like autoResize activate.
+		// Only process MCP messages when isMcpApp is true (set from component
+		// props) to prevent non-MCP iframes from hijacking the tool relay.
 		if (
+			isMcpApp &&
 			data?.jsonrpc === '2.0' &&
 			data?.method === 'ui/initialize' &&
 			data?.id != null &&
@@ -249,6 +248,7 @@ window.Chart = parent.Chart; // Chart previously assigned on parent
 		// handle ui/update-model-context, or return error for
 		// other unsupported JSON-RPC requests.
 		if (
+			isMcpApp &&
 			data?.jsonrpc === '2.0' &&
 			data?.id != null &&
 			data?.method &&
@@ -345,6 +345,7 @@ window.Chart = parent.Chart; // Chart previously assigned on parent
 		// Ignore height: 0 — apps with 100vh layouts report 0 before
 		// the iframe has an initial height to fill.
 		if (
+			isMcpApp &&
 			data?.jsonrpc === '2.0' &&
 			data?.method === 'ui/notifications/size-changed' &&
 			typeof data?.params?.height === 'number' &&
