@@ -21,6 +21,15 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 
 
+class ResolveAppRequest(BaseModel):
+    tool_name: str
+
+
+class ResolveAppResponse(BaseModel):
+    resourceUri: str
+    serverId: str
+
+
 class ReadResourceRequest(BaseModel):
     server_id: str
     uri: str
@@ -82,6 +91,49 @@ async def _get_mcp_client(
         raise HTTPException(status_code=500, detail=f"Failed to connect to MCP server: {str(e)}")
 
     return client
+
+
+@router.post("/resolve-app", response_model=ResolveAppResponse)
+async def resolve_mcp_app(
+    request: Request,
+    body: ResolveAppRequest,
+    user: UserModel = Depends(get_verified_user),
+):
+    """Check if a tool has an MCP App UI. Returns resourceUri + serverId or 404."""
+    tool_name = body.tool_name
+    tool_servers = request.app.state.config.TOOL_SERVER_CONNECTIONS
+
+    # Match tool name prefix against known MCP server IDs.
+    # This handles underscores in server IDs correctly (e.g. "my_server_search"
+    # matches server "my_server" → tool "search").
+    server_id = None
+    for server in tool_servers:
+        if server.get("type", "") != "mcp":
+            continue
+        sid = server.get("info", {}).get("id", "")
+        if sid and tool_name.startswith(f"{sid}_"):
+            server_id = sid
+            break
+
+    if not server_id:
+        raise HTTPException(status_code=404, detail="Not an MCP tool")
+
+    actual_tool_name = tool_name[len(f"{server_id}_"):]
+    client = await _get_mcp_client(request, server_id, user)
+
+    try:
+        tool_specs = await client.list_tool_specs()
+        for spec in tool_specs:
+            if spec.get("name") == actual_tool_name:
+                meta = spec.get("_meta", {})
+                ui = meta.get("ui", {}) if meta else {}
+                uri = ui.get("resourceUri") or (meta.get("ui/resourceUri") if meta else None)
+                if uri and uri.startswith("ui://"):
+                    return ResolveAppResponse(resourceUri=uri, serverId=server_id)
+                raise HTTPException(status_code=404, detail="Tool has no MCP App UI")
+        raise HTTPException(status_code=404, detail=f"Tool '{actual_tool_name}' not found")
+    finally:
+        await client.disconnect()
 
 
 @router.post("/resource", response_model=ReadResourceResponse)

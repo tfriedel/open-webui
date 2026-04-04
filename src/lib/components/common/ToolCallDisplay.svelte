@@ -18,7 +18,7 @@
 	import Image from './Image.svelte';
 	import FullHeightIframe from './FullHeightIframe.svelte';
 	import { settings } from '$lib/stores';
-	import { readResource } from '$lib/apis/mcp';
+	import { resolveMcpApp, readResource } from '$lib/apis/mcp';
 	import { createAppInstance, addApp, updateAppModelContext, removeApp } from '$lib/stores/mcpApps';
 
 	export let id: string = '';
@@ -31,7 +31,6 @@
 		files?: string;
 		embeds?: string;
 		done?: string;
-		mcp_app?: string;
 	} = {};
 
 	export let open = false;
@@ -100,17 +99,21 @@
 	let mcpLoading = false;
 	let mcpError: string | null = null;
 
-	// Parse MCP app attribute
-	$: {
-		if (attributes?.mcp_app) {
-			try {
-				const parsed = JSON.parse(decode(attributes.mcp_app));
-				if (parsed?.resourceUri && parsed?.serverId) {
-					mcpApp = parsed;
-				}
-			} catch (e) {
-				console.error('Failed to parse mcp_app attribute:', e);
-			}
+	// Resolve whether this tool has an MCP App UI (via backend lookup, no middleware needed)
+	let mcpChecked = false;
+	$: if (isDone && attributes?.name && !mcpApp && !mcpChecked) {
+		mcpChecked = true;
+		const token = localStorage.token;
+		if (token) {
+			resolveMcpApp(token, attributes.name)
+				.then((resolved) => {
+					if (resolved) {
+						mcpApp = resolved;
+					}
+				})
+				.catch(() => {
+					// Not an MCP app tool, ignore
+				});
 		}
 	}
 

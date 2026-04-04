@@ -79,7 +79,13 @@ class MCPClient:
             # TODO: handle outputSchema if needed
             outputSchema = getattr(tool, 'outputSchema', None)
 
-            tool_specs.append({'name': name, 'description': description, 'parameters': inputSchema})
+            spec = {'name': name, 'description': description, 'parameters': inputSchema}
+
+            # Preserve _meta (e.g. ui.resourceUri for MCP Apps)
+            if tool.meta:
+                spec['_meta'] = tool.meta
+
+            tool_specs.append(spec)
 
         return tool_specs
 

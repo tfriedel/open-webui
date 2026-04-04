@@ -12,6 +12,28 @@ export interface MCPAppResource {
 	mimeType: string;
 }
 
+export interface MCPResolvedApp {
+	resourceUri: string;
+	serverId: string;
+}
+
+export const resolveMcpApp = async (
+	token: string,
+	toolName: string
+): Promise<MCPResolvedApp | null> => {
+	const res = await fetch(`${WEBUI_API_BASE_URL}/mcp/resolve-app`, {
+		method: 'POST',
+		headers: {
+			'Content-Type': 'application/json',
+			Authorization: `Bearer ${token}`
+		},
+		body: JSON.stringify({ tool_name: toolName })
+	});
+
+	if (!res.ok) return null;
+	return res.json();
+};
+
 export const readResource = async (
 	token: string,
 	serverId: string,
