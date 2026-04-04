@@ -1232,6 +1232,7 @@ async def chat_completion_tools_handler(
 
     skip_files = False
     sources = []
+    mcp_tool_outputs = []
 
     specs = [tool['spec'] for tool in tools.values()]
     tools_specs = json.dumps(specs, ensure_ascii=False)
@@ -1342,6 +1343,28 @@ async def chat_completion_tools_handler(
                             }
                         )
 
+                    # Collect MCP tool call output for non-native mode.
+                    # These items are prepended to the streaming handler's output
+                    # so serialize_output() includes the <details> tag, which lets
+                    # ToolCallDisplay render and resolve MCP App UIs.
+                    if tool_type == 'mcp':
+                        call_id = str(uuid4())
+                        result_text = str(tool_result) if tool_result else ''
+                        mcp_tool_outputs.extend([
+                            {
+                                'type': 'function_call',
+                                'call_id': call_id,
+                                'name': tool_function_name,
+                                'arguments': json.dumps(tool_function_params) if isinstance(tool_function_params, dict) else str(tool_function_params),
+                            },
+                            {
+                                'type': 'function_call_output',
+                                'call_id': call_id,
+                                'output': [{'type': 'input_text', 'text': result_text}],
+                                'status': 'completed',
+                            },
+                        ])
+
                 if tool_result:
                     tool = tools[tool_function_name]
                     tool_id = tool.get('tool_id', '')
@@ -1387,7 +1410,7 @@ async def chat_completion_tools_handler(
     if skip_files and 'files' in body.get('metadata', {}):
         del body['metadata']['files']
 
-    return body, {'sources': sources}
+    return body, {'sources': sources, 'mcp_tool_outputs': mcp_tool_outputs}
 
 
 async def chat_memory_handler(request: Request, form_data: dict, extra_params: dict, user):
@@ -2688,6 +2711,8 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                         request, form_data, extra_params, user, models, tools_dict
                     )
                     sources.extend(flags.get('sources', []))
+                    if flags.get('mcp_tool_outputs'):
+                        metadata['mcp_tool_outputs'] = flags['mcp_tool_outputs']
                 except Exception as e:
                     log.exception(e)
 
@@ -3468,6 +3493,12 @@ async def streaming_chat_response_handler(response, ctx):
                     ]
                 else:
                     output = []
+
+            # Prepend MCP tool call items from non-native function calling
+            # so serialize_output() includes them in the rendered content.
+            mcp_tool_outputs = metadata.get('mcp_tool_outputs', [])
+            if mcp_tool_outputs:
+                output = mcp_tool_outputs + output
 
             usage = None
             prior_output = []
