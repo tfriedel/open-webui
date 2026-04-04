@@ -21,7 +21,7 @@
 	import { resolveMcpApp, readResource } from '$lib/apis/mcp';
 	import { createAppInstance, addApp, removeApp } from '$lib/stores/mcpApps';
 
-	/** Escape a value for safe embedding inside a <script> tag (prevents `</script>` injection). */
+	// Escape a value for safe embedding inside a script tag (prevents closing-tag injection).
 	function safeJsonStringify(value: unknown): string {
 		return JSON.stringify(value).replace(/</g, '\\u003c');
 	}
@@ -258,6 +258,7 @@
 					toolResult={typeof parsedResult === 'object' ? JSON.stringify(parsedResult) : String(parsedResult ?? '')}
 					isMcpApp={true}
 					serverId={mcpApp?.serverId ?? null}
+					mcpInstanceId={mcpInstanceId}
 					initialHeight={600}
 					allowScripts={true}
 					allowForms={$settings?.iframeSandboxAllowForms ?? false}

@@ -534,7 +534,7 @@ def normalize_mcp_tool_result(result):
     if isinstance(result, dict):
         if result.get('isError'):
             raise Exception(result.get('content', 'MCP tool call failed'))
-        return result
+        return result.get('content', result)
     return result
 
 

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { createEventDispatcher, onDestroy, onMount, tick } from 'svelte';
 	import { WEBUI_API_BASE_URL } from '$lib/constants';
+	import { updateAppModelContext } from '$lib/stores/mcpApps';
 
 	const dispatch = createEventDispatcher();
 
@@ -29,6 +30,7 @@
 	export let serverId: string | null = null; // MCP server ID for relaying tool calls
 	export let toolResult: string | null = null; // MCP tool result text to send after tool-input
 	export let iframeAllow: string | null = null; // iframe allow attribute for permissions policy
+	export let mcpInstanceId: string | null = null; // instance ID for model context store updates
 
 	let iframe: HTMLIFrameElement | null = null;
 	let iframeSrc: string | null = null;
@@ -182,7 +184,8 @@ window.Chart = parent.Chart; // Chart previously assigned on parent
 						protocolVersion: data?.params?.protocolVersion || '2026-01-26',
 						hostInfo: { name: 'Open WebUI', version: '1.0.0' },
 						hostCapabilities: {
-							serverTools: { listChanged: false }
+							serverTools: { listChanged: false },
+							updateModelContext: { text: {} }
 						},
 						hostContext: {
 							containerDimensions: { height: 600 }
@@ -225,21 +228,16 @@ window.Chart = parent.Chart; // Chart previously assigned on parent
 				// transport accepts it (synthetic dispatchEvent can fail).
 				if (toolResult) {
 					setTimeout(() => {
-						let params: Record<string, unknown>;
+						const params: Record<string, unknown> = {
+							content: [{ type: 'text', text: toolResult }]
+						};
 						try {
 							const parsed = JSON.parse(toolResult);
-							if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-								// Structured result — pass through as-is so the app
-								// receives the same shape as /api/v1/mcp/tool/call.
-								params = parsed;
-							} else if (Array.isArray(parsed)) {
-								// Content array from MCP
-								params = { content: parsed };
-							} else {
-								params = { content: [{ type: 'text', text: toolResult }] };
+							if (parsed && typeof parsed === 'object') {
+								params.structuredContent = parsed;
 							}
 						} catch {
-							params = { content: [{ type: 'text', text: toolResult }] };
+							// not JSON, that's fine
 						}
 						iframe.contentWindow?.postMessage(
 							{ jsonrpc: '2.0', method: 'ui/notifications/tool-result', params },
@@ -328,6 +326,25 @@ window.Chart = parent.Chart; // Chart previously assigned on parent
 						'*'
 					);
 				}
+			} else if (data.method === 'ui/update-model-context') {
+				// Persist model context so the LLM can see live app state
+				if (mcpInstanceId && data.params?.context != null) {
+					const ctx =
+						typeof data.params.context === 'string'
+							? data.params.context
+							: JSON.stringify(data.params.context);
+					updateAppModelContext(mcpInstanceId, ctx);
+				}
+				iframe.contentWindow?.postMessage(
+					{ jsonrpc: '2.0', id: data.id, result: {} },
+					'*'
+				);
+			} else if (data.method.startsWith('ui/')) {
+				// Acknowledge other ui/ requests we don't handle yet
+				iframe.contentWindow?.postMessage(
+					{ jsonrpc: '2.0', id: data.id, result: {} },
+					'*'
+				);
 			} else {
 				iframe.contentWindow?.postMessage(
 					{

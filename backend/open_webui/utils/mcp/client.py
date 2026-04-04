@@ -2,8 +2,6 @@ import asyncio
 from typing import Optional
 from contextlib import AsyncExitStack
 
-import anyio
-
 from mcp import ClientSession
 from mcp.client.auth import OAuthClientProvider, TokenStorage
 from mcp.client.streamable_http import streamablehttp_client
@@ -38,29 +36,30 @@ class MCPClient:
         self.exit_stack = None
 
     async def connect(self, url: str, headers: Optional[dict] = None):
-        async with AsyncExitStack() as exit_stack:
-            try:
-                with anyio.fail_after(30):
-                    if AIOHTTP_CLIENT_SESSION_TOOL_SERVER_SSL:
-                        self._streams_context = streamablehttp_client(url, headers=headers)
-                    else:
-                        self._streams_context = streamablehttp_client(
-                            url,
-                            headers=headers,
-                            httpx_client_factory=create_insecure_httpx_client,
-                        )
+        exit_stack = AsyncExitStack()
+        await exit_stack.__aenter__()
+        try:
+            if AIOHTTP_CLIENT_SESSION_TOOL_SERVER_SSL:
+                self._streams_context = streamablehttp_client(url, headers=headers)
+            else:
+                self._streams_context = streamablehttp_client(
+                    url,
+                    headers=headers,
+                    httpx_client_factory=create_insecure_httpx_client,
+                )
 
-                    transport = await exit_stack.enter_async_context(self._streams_context)
-                    read_stream, write_stream, _ = transport
+            transport = await exit_stack.enter_async_context(self._streams_context)
+            read_stream, write_stream, _ = transport
 
-                    self._session_context = ClientSession(read_stream, write_stream)  # pylint: disable=W0201
+            self._session_context = ClientSession(read_stream, write_stream)  # pylint: disable=W0201
 
-                    self.session = await exit_stack.enter_async_context(self._session_context)
-                    await self.session.initialize()
-                self.exit_stack = exit_stack.pop_all()
-            except Exception as e:
-                await asyncio.shield(self.disconnect())
-                raise e
+            self.session = await exit_stack.enter_async_context(self._session_context)
+            async with asyncio.timeout(30):
+                await self.session.initialize()
+            self.exit_stack = exit_stack
+        except Exception as e:
+            await asyncio.shield(exit_stack.aclose())
+            raise e
 
     async def list_tool_specs(self) -> list[dict]:
         if not self.session:
