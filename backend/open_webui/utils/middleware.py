@@ -1343,27 +1343,27 @@ async def chat_completion_tools_handler(
                             }
                         )
 
-                    # Collect MCP tool call output for non-native mode.
-                    # These items are prepended to the streaming handler's output
-                    # so serialize_output() includes the <details> tag, which lets
-                    # ToolCallDisplay render and resolve MCP App UIs.
-                    if tool_type == 'mcp':
-                        call_id = str(uuid4())
-                        result_text = str(tool_result) if tool_result else ''
-                        mcp_tool_outputs.extend([
-                            {
-                                'type': 'function_call',
-                                'call_id': call_id,
-                                'name': tool_function_name,
-                                'arguments': json.dumps(tool_function_params) if isinstance(tool_function_params, dict) else str(tool_function_params),
-                            },
-                            {
-                                'type': 'function_call_output',
-                                'call_id': call_id,
-                                'output': [{'type': 'input_text', 'text': result_text}],
-                                'status': 'completed',
-                            },
-                        ])
+                # Collect MCP tool call output for non-native mode.
+                # These items are prepended to the streaming handler's output
+                # so serialize_output() includes the <details> tag, which lets
+                # ToolCallDisplay render and resolve MCP App UIs.
+                if tool_type == 'mcp':
+                    call_id = str(uuid4())
+                    result_text = json.dumps(tool_result) if tool_result else ''
+                    mcp_tool_outputs.extend([
+                        {
+                            'type': 'function_call',
+                            'call_id': call_id,
+                            'name': tool_function_name,
+                            'arguments': json.dumps(tool_function_params) if isinstance(tool_function_params, dict) else str(tool_function_params),
+                        },
+                        {
+                            'type': 'function_call_output',
+                            'call_id': call_id,
+                            'output': [{'type': 'input_text', 'text': result_text}],
+                            'status': 'completed',
+                        },
+                    ])
 
                 if tool_result:
                     tool = tools[tool_function_name]
@@ -3496,8 +3496,10 @@ async def streaming_chat_response_handler(response, ctx):
 
             # Prepend MCP tool call items from non-native function calling
             # so serialize_output() includes them in the rendered content.
-            mcp_tool_outputs = metadata.get('mcp_tool_outputs', [])
-            if mcp_tool_outputs:
+            # Only prepend if existing_output doesn't already contain them
+            # (avoids duplicates on message regeneration).
+            mcp_tool_outputs = metadata.pop('mcp_tool_outputs', [])
+            if mcp_tool_outputs and not existing_output:
                 output = mcp_tool_outputs + output
 
             usage = None

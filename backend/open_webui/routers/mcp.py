@@ -21,6 +21,13 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _get_resource_uri(spec: dict) -> str | None:
+    """Extract the ui:// resource URI from a tool spec's _meta, if present."""
+    meta = spec.get("_meta", {})
+    ui = meta.get("ui", {}) if meta else {}
+    return ui.get("resourceUri") or (meta.get("ui/resourceUri") if meta else None)
+
+
 class ResolveAppRequest(BaseModel):
     tool_name: str
 
@@ -66,11 +73,26 @@ async def _get_mcp_client(
     if not has_connection_access(user, server_connection):
         raise HTTPException(status_code=403, detail=f"Access denied to MCP server '{server_id}'")
 
-    # Build auth headers
+    # Build auth headers — mirror the logic in middleware.py
     headers = {}
     auth_type = server_connection.get("auth_type", "")
     if auth_type == "bearer":
         headers["Authorization"] = f"Bearer {server_connection.get('key', '')}"
+    elif auth_type == "session":
+        headers["Authorization"] = f"Bearer {request.state.token.credentials}"
+    elif auth_type == "system_oauth":
+        oauth_token = request.headers.get("x-oauth-access-token", "")
+        if oauth_token:
+            headers["Authorization"] = f"Bearer {oauth_token}"
+    elif auth_type in ("oauth_2.1", "oauth_2.1_static"):
+        try:
+            oauth_token = await request.app.state.oauth_client_manager.get_oauth_token(
+                user.id, f"mcp:{server_id}"
+            )
+            if oauth_token:
+                headers["Authorization"] = f"Bearer {oauth_token.get('access_token', '')}"
+        except Exception as e:
+            log.error(f"Error getting OAuth token for MCP server '{server_id}': {e}")
 
     connection_headers = server_connection.get("headers", None)
     if connection_headers:
@@ -103,17 +125,16 @@ async def resolve_mcp_app(
     tool_name = body.tool_name
     tool_servers = request.app.state.config.TOOL_SERVER_CONNECTIONS
 
-    # Match tool name prefix against known MCP server IDs.
-    # This handles underscores in server IDs correctly (e.g. "my_server_search"
-    # matches server "my_server" → tool "search").
+    # Match tool name prefix against known MCP server IDs using longest-match-wins
+    # to avoid ambiguity when server IDs share prefixes (e.g. "foo" vs "foo_bar").
     server_id = None
     for server in tool_servers:
         if server.get("type", "") != "mcp":
             continue
         sid = server.get("info", {}).get("id", "")
         if sid and tool_name.startswith(f"{sid}_"):
-            server_id = sid
-            break
+            if server_id is None or len(sid) > len(server_id):
+                server_id = sid
 
     if not server_id:
         raise HTTPException(status_code=404, detail="Not an MCP tool")
@@ -122,12 +143,10 @@ async def resolve_mcp_app(
     client = await _get_mcp_client(request, server_id, user)
 
     try:
-        tool_specs = await client.list_tool_specs()
+        tool_specs = await client.list_tool_specs() or []
         for spec in tool_specs:
             if spec.get("name") == actual_tool_name:
-                meta = spec.get("_meta", {})
-                ui = meta.get("ui", {}) if meta else {}
-                uri = ui.get("resourceUri") or (meta.get("ui/resourceUri") if meta else None)
+                uri = _get_resource_uri(spec)
                 if uri and uri.startswith("ui://"):
                     return ResolveAppResponse(resourceUri=uri, serverId=server_id)
                 raise HTTPException(status_code=404, detail="Tool has no MCP App UI")
@@ -149,6 +168,16 @@ async def read_resource(
     client = await _get_mcp_client(request, body.server_id, user)
 
     try:
+        # Verify the requested URI is actually advertised by a tool on this server
+        tool_specs = await client.list_tool_specs() or []
+        advertised = False
+        for spec in tool_specs:
+            if _get_resource_uri(spec) == body.uri:
+                advertised = True
+                break
+        if not advertised:
+            raise HTTPException(status_code=403, detail="Resource URI not advertised by any tool on this server")
+
         result = await client.read_resource(body.uri)
         if not result:
             raise HTTPException(status_code=404, detail="Resource not found")
@@ -183,6 +212,12 @@ async def call_tool(
     client = await _get_mcp_client(request, body.server_id, user)
 
     try:
+        # Verify the tool exists on this server before calling
+        tool_specs = await client.list_tool_specs() or []
+        tool_names = {spec.get("name") for spec in tool_specs}
+        if body.tool_name not in tool_names:
+            raise HTTPException(status_code=404, detail=f"Tool '{body.tool_name}' not found on server '{body.server_id}'")
+
         result = await client.call_tool(body.tool_name, body.arguments)
 
         if result is None:
