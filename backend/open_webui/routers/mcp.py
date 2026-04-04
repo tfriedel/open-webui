@@ -28,6 +28,29 @@ def _get_resource_uri(spec: dict) -> str | None:
     return ui.get("resourceUri")
 
 
+async def _get_system_oauth_access_token(
+    request: Request, user: UserModel
+) -> str | None:
+    """Resolve the system OAuth access token from the current session."""
+    oauth_token = request.headers.get("x-oauth-access-token", "")
+    if oauth_token:
+        return oauth_token
+
+    try:
+        oauth_session_id = request.cookies.get("oauth_session_id")
+        if oauth_session_id:
+            oauth_token = await request.app.state.oauth_manager.get_oauth_token(
+                user.id,
+                oauth_session_id,
+            )
+            if oauth_token:
+                return oauth_token.get("access_token", "")
+    except Exception as e:
+        log.error(f"Error getting system OAuth token: {e}")
+
+    return None
+
+
 class ResolveAppRequest(BaseModel):
     tool_name: str
 
@@ -81,7 +104,7 @@ async def _get_mcp_client(
     elif auth_type == "session":
         headers["Authorization"] = f"Bearer {request.state.token.credentials}"
     elif auth_type == "system_oauth":
-        oauth_token = request.headers.get("x-oauth-access-token", "")
+        oauth_token = await _get_system_oauth_access_token(request, user)
         if oauth_token:
             headers["Authorization"] = f"Bearer {oauth_token}"
     elif auth_type in ("oauth_2.1", "oauth_2.1_static"):

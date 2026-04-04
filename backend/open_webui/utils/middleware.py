@@ -526,6 +526,18 @@ def serialize_output(output: list) -> str:
     return content.strip()
 
 
+def has_function_call_output(output: Optional[list]) -> bool:
+    return bool(output and any(item.get('type') == 'function_call' for item in output))
+
+
+def normalize_mcp_tool_result(result):
+    if isinstance(result, dict):
+        if result.get('isError'):
+            raise Exception(result.get('content', 'MCP tool call failed'))
+        return result
+    return result
+
+
 def deep_merge(target, source):
     """
     Merge source into target recursively (returning new structure).
@@ -2580,11 +2592,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                                         function_name,
                                         function_args=kwargs,
                                     )
-                                    if isinstance(result, dict):
-                                        if result.get('isError'):
-                                            raise Exception(result.get('content', 'MCP tool call failed'))
-                                        return result.get('content', result)
-                                    return result
+                                    return normalize_mcp_tool_result(result)
 
                                 return tool_function
 
@@ -3501,15 +3509,11 @@ async def streaming_chat_response_handler(response, ctx):
 
             # Prepend MCP tool call items from non-native function calling
             # so serialize_output() includes them in the rendered content.
-            # Skip if existing_output already starts with a function_call
+            # Skip if existing_output already includes a function_call
             # item (avoids duplicates on message regeneration).
             mcp_tool_outputs = metadata.pop('mcp_tool_outputs', [])
             if mcp_tool_outputs:
-                has_existing_mcp = (
-                    existing_output
-                    and len(existing_output) > 0
-                    and existing_output[0].get('type') == 'function_call'
-                )
+                has_existing_mcp = has_function_call_output(existing_output)
                 if not has_existing_mcp:
                     output = mcp_tool_outputs + output
 
