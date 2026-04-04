@@ -62,7 +62,7 @@ class MCPClient:
                 await asyncio.shield(self.disconnect())
                 raise e
 
-    async def list_tool_specs(self) -> Optional[dict]:
+    async def list_tool_specs(self) -> list[dict]:
         if not self.session:
             raise RuntimeError('MCP client is not connected.')
 

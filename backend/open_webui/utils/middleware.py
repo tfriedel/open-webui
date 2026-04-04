@@ -3501,11 +3501,17 @@ async def streaming_chat_response_handler(response, ctx):
 
             # Prepend MCP tool call items from non-native function calling
             # so serialize_output() includes them in the rendered content.
-            # Only prepend if existing_output doesn't already contain them
-            # (avoids duplicates on message regeneration).
+            # Skip if existing_output already starts with a function_call
+            # item (avoids duplicates on message regeneration).
             mcp_tool_outputs = metadata.pop('mcp_tool_outputs', [])
-            if mcp_tool_outputs and not existing_output:
-                output = mcp_tool_outputs + output
+            if mcp_tool_outputs:
+                has_existing_mcp = (
+                    existing_output
+                    and len(existing_output) > 0
+                    and existing_output[0].get('type') == 'function_call'
+                )
+                if not has_existing_mcp:
+                    output = mcp_tool_outputs + output
 
             usage = None
             prior_output = []

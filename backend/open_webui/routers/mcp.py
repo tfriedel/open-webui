@@ -23,9 +23,9 @@ router = APIRouter()
 
 def _get_resource_uri(spec: dict) -> str | None:
     """Extract the ui:// resource URI from a tool spec's _meta, if present."""
-    meta = spec.get("_meta", {})
-    ui = meta.get("ui", {}) if meta else {}
-    return ui.get("resourceUri") or (meta.get("ui/resourceUri") if meta else None)
+    meta = spec.get("_meta") or {}
+    ui = meta.get("ui") or {}
+    return ui.get("resourceUri")
 
 
 class ResolveAppRequest(BaseModel):
@@ -143,7 +143,7 @@ async def resolve_mcp_app(
     client = await _get_mcp_client(request, server_id, user)
 
     try:
-        tool_specs = await client.list_tool_specs() or []
+        tool_specs = await client.list_tool_specs()
         for spec in tool_specs:
             if spec.get("name") == actual_tool_name:
                 uri = _get_resource_uri(spec)
@@ -170,7 +170,7 @@ async def read_resource(
     try:
         # Verify the requested URI is actually advertised by a tool on this server
         # and capture the tool's UI metadata (CSP, permissions) while we're at it.
-        tool_specs = await client.list_tool_specs() or []
+        tool_specs = await client.list_tool_specs()
         ui_meta = None
         for spec in tool_specs:
             if _get_resource_uri(spec) == body.uri:
@@ -224,12 +224,6 @@ async def call_tool(
     client = await _get_mcp_client(request, body.server_id, user)
 
     try:
-        # Verify the tool exists on this server before calling
-        tool_specs = await client.list_tool_specs() or []
-        tool_names = {spec.get("name") for spec in tool_specs}
-        if body.tool_name not in tool_names:
-            raise HTTPException(status_code=404, detail=f"Tool '{body.tool_name}' not found on server '{body.server_id}'")
-
         result = await client.call_tool(body.tool_name, body.arguments)
 
         if result is None:

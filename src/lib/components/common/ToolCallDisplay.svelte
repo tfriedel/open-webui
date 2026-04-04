@@ -21,6 +21,11 @@
 	import { resolveMcpApp, readResource } from '$lib/apis/mcp';
 	import { createAppInstance, addApp, updateAppModelContext, removeApp } from '$lib/stores/mcpApps';
 
+	/** Escape a value for safe embedding inside a <script> tag (prevents `</script>` injection). */
+	function safeJsonStringify(value: unknown): string {
+		return JSON.stringify(value).replace(/</g, '\\u003c');
+	}
+
 	export let id: string = '';
 	export let attributes: {
 		type?: string;
@@ -144,12 +149,6 @@
 
 			let html = resource.content || '';
 
-			// Escape for safe embedding inside a <script> tag: replace `</`
-			// with `<\/` so that `</script>` in values can't close the tag.
-			function safeJsonStringify(value: unknown): string {
-				return JSON.stringify(value).replace(/</g, '\\u003c');
-			}
-
 			// Inject tool data globals, server ID, and a height reporter.
 			// tool-result and tool-args are set as globals for immediate access;
 			// tool-result is also sent from the parent (FullHeightIframe) via
@@ -187,7 +186,7 @@
 				`.observe(t,{childList:true,subtree:true,attributes:true});` +
 				`});` +
 				`}` +
-				`setInterval(report,500);` +
+				`report();` +
 				`})();` +
 				`<\/script>`;
 
