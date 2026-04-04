@@ -10,6 +10,18 @@ export interface MCPAppResource {
 	uri: string;
 	content: string;
 	mimeType: string;
+	csp?: {
+		connectDomains?: string[];
+		resourceDomains?: string[];
+		frameDomains?: string[];
+		baseUriDomains?: string[];
+	};
+	permissions?: {
+		camera?: Record<string, unknown>;
+		microphone?: Record<string, unknown>;
+		geolocation?: Record<string, unknown>;
+		clipboardWrite?: Record<string, unknown>;
+	};
 }
 
 export interface MCPResolvedApp {

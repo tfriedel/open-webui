@@ -169,13 +169,15 @@ async def read_resource(
 
     try:
         # Verify the requested URI is actually advertised by a tool on this server
+        # and capture the tool's UI metadata (CSP, permissions) while we're at it.
         tool_specs = await client.list_tool_specs() or []
-        advertised = False
+        ui_meta = None
         for spec in tool_specs:
             if _get_resource_uri(spec) == body.uri:
-                advertised = True
+                meta = spec.get("_meta", {}) or {}
+                ui_meta = meta.get("ui", {}) or {}
                 break
-        if not advertised:
+        if ui_meta is None:
             raise HTTPException(status_code=403, detail="Resource URI not advertised by any tool on this server")
 
         result = await client.read_resource(body.uri)
@@ -190,8 +192,18 @@ async def read_resource(
             if item.get("mimeType"):
                 mime_type = item.get("mimeType")
 
+        # Populate CSP and permissions from the tool's _meta.ui if present
+        csp_data = ui_meta.get("csp") if ui_meta else None
+        permissions_data = ui_meta.get("permissions") if ui_meta else None
+
         return ReadResourceResponse(
-            resource=MCPAppResource(uri=body.uri, mimeType=mime_type, content=content)
+            resource=MCPAppResource(
+                uri=body.uri,
+                mimeType=mime_type,
+                content=content,
+                csp=csp_data,
+                permissions=permissions_data,
+            )
         )
     except HTTPException:
         raise
@@ -222,10 +234,19 @@ async def call_tool(
 
         if result is None:
             return MCPToolResult(content=[{"type": "text", "text": ""}], isError=False)
-        if isinstance(result, list):
-            return MCPToolResult(content=result, isError=False)
-        return MCPToolResult(content=[{"type": "text", "text": str(result)}], isError=False)
 
+        content = result.get("content", [])
+        if not isinstance(content, list):
+            content = [{"type": "text", "text": str(content)}]
+
+        return MCPToolResult(
+            content=content,
+            structuredContent=result.get("structuredContent"),
+            isError=result.get("isError", False),
+        )
+
+    except HTTPException:
+        raise
     except Exception as e:
         log.error(f"Tool call failed for '{body.tool_name}': {e}")
         return MCPToolResult(content=[{"type": "text", "text": str(e)}], isError=True)

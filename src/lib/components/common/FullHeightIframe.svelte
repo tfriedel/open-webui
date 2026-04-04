@@ -270,7 +270,14 @@ window.Chart = parent.Chart; // Chart previously assigned on parent
 							arguments: data.params?.arguments ?? {}
 						})
 					})
-						.then((r) => r.json())
+						.then((r) => {
+							if (!r.ok) {
+								return r.json().then((body: Record<string, unknown>) => {
+									throw new Error((body?.detail as string) ?? `HTTP ${r.status}`);
+								});
+							}
+							return r.json();
+						})
 						.then((result) => {
 							// Strip null values — the Python MCP SDK serializes
 							// Optional fields as null, but the TypeScript SDK's

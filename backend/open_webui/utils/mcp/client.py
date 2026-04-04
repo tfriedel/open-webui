@@ -97,13 +97,7 @@ class MCPClient:
         if not result:
             raise Exception('No result returned from MCP tool call.')
 
-        result_dict = result.model_dump(mode='json')
-        result_content = result_dict.get('content', {})
-
-        if result.isError:
-            raise Exception(result_content)
-        else:
-            return result_content
+        return result.model_dump(mode='json')
 
     async def list_resources(self, cursor: Optional[str] = None) -> Optional[dict]:
         if not self.session:

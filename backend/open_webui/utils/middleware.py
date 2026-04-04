@@ -2576,10 +2576,15 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
                             def make_tool_function(client, function_name):
                                 async def tool_function(**kwargs):
-                                    return await client.call_tool(
+                                    result = await client.call_tool(
                                         function_name,
                                         function_args=kwargs,
                                     )
+                                    if isinstance(result, dict):
+                                        if result.get('isError'):
+                                            raise Exception(result.get('content', 'MCP tool call failed'))
+                                        return result.get('content', result)
+                                    return result
 
                                 return tool_function
 
