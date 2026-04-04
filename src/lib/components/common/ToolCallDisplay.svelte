@@ -20,7 +20,6 @@
 	import { settings } from '$lib/stores';
 	import { readResource } from '$lib/apis/mcp';
 	import { createAppInstance, addApp, updateAppModelContext, removeApp } from '$lib/stores/mcpApps';
-	import type { MCPAppResource } from '$lib/types/mcpApps';
 
 	export let id: string = '';
 	export let attributes: {
@@ -143,9 +142,9 @@
 			let html = resource.content || '';
 
 			// Inject tool data globals, server ID, and a height reporter.
-			// tool-result is sent from the parent (FullHeightIframe) via postMessage
-			// rather than from an injected shim, to avoid double-encoding and
-			// synthetic MessageEvent issues with the SDK transport.
+			// tool-result and tool-args are set as globals for immediate access;
+			// tool-result is also sent from the parent (FullHeightIframe) via
+			// postMessage after init, for SDK transports that expect it.
 			//
 			// Height reporter: The SDK's autoResize relies on ResizeObserver on
 			// html/body, but apps using overflow:hidden clamp body size to the
@@ -155,7 +154,7 @@
 			const dataScript =
 				`<script>` +
 				`window.__MCP_TOOL_RESULT__=${JSON.stringify(result || '')};` +
-				`window.__MCP_TOOL_ARGS__=${args || '{}'};` +
+				`window.__MCP_TOOL_ARGS__=${JSON.stringify(args || '{}')};` +
 				`window.__MCP_SERVER_ID__=${JSON.stringify(mcpApp.serverId)};` +
 				`window.parent.postMessage({type:"mcp:server-id",serverId:${JSON.stringify(mcpApp.serverId)}},"*");` +
 				// Height reporter: observe #root for content changes and report height

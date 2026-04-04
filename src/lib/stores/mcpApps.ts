@@ -35,7 +35,7 @@ export function createAppInstance(
 export function addApp(app: MCPAppInstance): void {
 	mcpApps.update((apps) => {
 		apps.set(app.instanceId, app);
-		return apps;
+		return new Map(apps);
 	});
 }
 
@@ -45,7 +45,7 @@ export function updateApp(instanceId: string, updates: Partial<MCPAppInstance>):
 		if (app) {
 			apps.set(instanceId, { ...app, ...updates });
 		}
-		return apps;
+		return new Map(apps);
 	});
 }
 
@@ -56,6 +56,6 @@ export function updateAppModelContext(instanceId: string, modelContext: string):
 export function removeApp(instanceId: string): void {
 	mcpApps.update((apps) => {
 		apps.delete(instanceId);
-		return apps;
+		return new Map(apps);
 	});
 }

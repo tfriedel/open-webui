@@ -46,6 +46,7 @@
 	// Detect URL vs raw HTML and prep src/srcdoc
 	$: isUrl = typeof src === 'string' && /^(https?:)?\/\//i.test(src);
 	$: if (src) {
+		mcpInitDone = false;
 		setIframeSrc();
 	}
 
@@ -139,7 +140,6 @@ window.Chart = parent.Chart; // Chart previously assigned on parent
 		if (!iframe) return;
 		try {
 			const doc = iframe.contentDocument || iframe.contentWindow?.document;
-			console.log('iframe doc:', doc);
 			if (!doc) return;
 			const h = Math.max(doc.documentElement?.scrollHeight ?? 0, doc.body?.scrollHeight ?? 0);
 			if (h > 0) iframe.style.height = h + 20 + 'px';
@@ -306,6 +306,15 @@ window.Chart = parent.Chart; // Chart previously assigned on parent
 								'*'
 							);
 						});
+				} else {
+					iframe.contentWindow?.postMessage(
+						{
+							jsonrpc: '2.0',
+							id: data.id,
+							error: { code: -32603, message: 'Not authenticated' }
+						},
+						'*'
+					);
 				}
 			} else if (data.method === 'ui/update-model-context') {
 				const content = data.params?.content || [];
@@ -346,8 +355,6 @@ window.Chart = parent.Chart; // Chart previously assigned on parent
 
 		// Pong message for testing connectivity
 		if (data?.type === 'pong') {
-			console.log('Received pong from iframe:', data);
-
 			// Optional: reply back
 			iframe.contentWindow?.postMessage({ type: 'pong:ack' }, '*');
 		}

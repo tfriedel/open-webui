@@ -14,7 +14,7 @@ from open_webui.utils.auth import get_verified_user
 from open_webui.models.users import UserModel
 from open_webui.utils.mcp.client import MCPClient
 from open_webui.utils.mcp.models import MCPAppResource, MCPToolResult
-from open_webui.utils.tools import has_tool_server_access
+from open_webui.utils.access_control import has_connection_access
 
 log = logging.getLogger(__name__)
 
@@ -54,7 +54,7 @@ async def _get_mcp_client(
     if not server_connection:
         raise HTTPException(status_code=404, detail=f"MCP server '{server_id}' not found")
 
-    if not has_tool_server_access(user, server_connection):
+    if not has_connection_access(user, server_connection):
         raise HTTPException(status_code=403, detail=f"Access denied to MCP server '{server_id}'")
 
     # Build auth headers
@@ -97,13 +97,13 @@ async def read_resource(
     client = await _get_mcp_client(request, body.server_id, user)
 
     try:
-        contents = await client.read_resource(body.uri)
-        if not contents:
+        result = await client.read_resource(body.uri)
+        if not result:
             raise HTTPException(status_code=404, detail="Resource not found")
 
         content = ""
         mime_type = "text/html"
-        for item in contents:
+        for item in result.get("contents", []):
             if item.get("text"):
                 content = item.get("text", "")
             if item.get("mimeType"):
