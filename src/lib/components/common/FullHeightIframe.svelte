@@ -228,16 +228,30 @@ window.Chart = parent.Chart; // Chart previously assigned on parent
 				// transport accepts it (synthetic dispatchEvent can fail).
 				if (toolResult) {
 					setTimeout(() => {
-						const params: Record<string, unknown> = {
+						let params: Record<string, unknown> = {
 							content: [{ type: 'text', text: toolResult }]
 						};
 						try {
 							const parsed = JSON.parse(toolResult);
-							if (parsed && typeof parsed === 'object') {
-								params.structuredContent = parsed;
+							if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+								// If the result already has a content array (MCP format),
+								// pass it through so apps see the original content items
+								// (including non-text types like resources or images).
+								if (Array.isArray(parsed.content)) {
+									params = { content: parsed.content };
+								}
+								if (parsed.structuredContent !== undefined) {
+									params.structuredContent = parsed.structuredContent;
+								}
+								if (parsed.isError !== undefined) {
+									params.isError = parsed.isError;
+								}
+							} else if (Array.isArray(parsed)) {
+								// Content array directly
+								params = { content: parsed };
 							}
 						} catch {
-							// not JSON, that's fine
+							// not JSON, that's fine — text fallback already set
 						}
 						iframe.contentWindow?.postMessage(
 							{ jsonrpc: '2.0', method: 'ui/notifications/tool-result', params },

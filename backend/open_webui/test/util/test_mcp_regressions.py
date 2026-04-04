@@ -17,10 +17,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from open_webui.routers.mcp import _get_system_oauth_access_token
-from open_webui.utils.middleware import (
-    has_function_call_output,
-    normalize_mcp_tool_result,
-)
+from open_webui.utils.middleware import normalize_mcp_tool_result
 
 
 # ---------------------------------------------------------------------------
@@ -99,8 +96,10 @@ def test_mcp_client_call_tool_returns_content_and_structured():
 # app needs for save/load.
 # ---------------------------------------------------------------------------
 
-def test_normalize_extracts_content_list():
-    """Must return the content array so process_tool_result can iterate it."""
+def test_normalize_returns_full_dict_with_content_and_structured():
+    """Must return the full MCP dict so process_tool_result can extract
+    both the content array and structuredContent.
+    """
     result = {
         'content': [
             {'type': 'text', 'text': 'Unit Converter opened.'},
@@ -113,10 +112,10 @@ def test_normalize_extracts_content_list():
 
     normalized = normalize_mcp_tool_result(result)
 
-    assert isinstance(normalized, list), (
-        'Must be a list so process_tool_result enters the MCP branch'
-    )
-    assert normalized == result['content']
+    assert isinstance(normalized, dict)
+    assert 'content' in normalized
+    assert 'structuredContent' in normalized
+    assert normalized['structuredContent'] == {'state_id': 'abc-123'}
 
 
 def test_normalize_raises_on_error():
@@ -130,7 +129,7 @@ def test_normalize_passes_through_non_dict():
     assert normalize_mcp_tool_result(None) is None
 
 
-def test_normalize_falls_back_to_full_dict_when_no_content_key():
+def test_normalize_passes_through_dict_without_content():
     result = {'custom_key': 'value'}
     assert normalize_mcp_tool_result(result) == result
 
@@ -166,12 +165,18 @@ def test_mcp_tool_result_round_trip_preserves_state_id():
 
     # Step 2: normalize_mcp_tool_result (inside the MCP tool function wrapper)
     normalized = normalize_mcp_tool_result(mcp_result)
-    assert isinstance(normalized, list), 'normalize must return content list'
+    assert isinstance(normalized, dict), 'normalize must return full MCP dict'
 
-    # Step 3: process_tool_result MCP branch extracts text items
-    # (simplified — just the text extraction logic from lines 1076-1108)
+    # Step 3: process_tool_result unpacks MCP dict then extracts text items
+    # (simplified — mirrors the actual code in process_tool_result)
+    mcp_structured_content = None
+    tool_result = normalized
+    if isinstance(tool_result, dict) and isinstance(tool_result.get('content'), list):
+        mcp_structured_content = tool_result.get('structuredContent')
+        tool_result = tool_result['content']
+
     tool_response = []
-    for item in normalized:
+    for item in tool_result:
         if isinstance(item, dict) and item.get('type') == 'text':
             text = item.get('text', '')
             if isinstance(text, str):
@@ -182,9 +187,12 @@ def test_mcp_tool_result_round_trip_preserves_state_id():
             tool_response.append(text)
     tool_result = tool_response[0] if len(tool_response) == 1 else tool_response
 
-    # Step 4: process_tool_result wraps lists and JSON-encodes
+    # Step 4: process_tool_result wraps lists, re-attaches structuredContent,
+    # then JSON-encodes
     if isinstance(tool_result, list):
         tool_result = {'results': tool_result}
+    if mcp_structured_content is not None and isinstance(tool_result, dict):
+        tool_result['structuredContent'] = mcp_structured_content
     if isinstance(tool_result, dict):
         tool_result = json.dumps(tool_result, indent=2, ensure_ascii=False)
 
@@ -201,7 +209,7 @@ def test_mcp_tool_result_round_trip_preserves_state_id():
     if isinstance(parsed, str):
         parsed = json.loads(parsed)  # unwrap inner JSON string
 
-    # Step 8: Verify state_id is recoverable
+    # Step 8: Verify state_id is recoverable from results and structuredContent
     assert isinstance(parsed, dict)
     results = parsed.get('results', [])
     state_ids = []
@@ -212,6 +220,12 @@ def test_mcp_tool_result_round_trip_preserves_state_id():
     assert 'test-uuid-123' in state_ids, (
         'state_id must survive the full round-trip so the app can save/load state'
     )
+
+    # structuredContent must also survive (P1 review fix)
+    assert parsed.get('structuredContent') == {
+        'state_id': 'test-uuid-123',
+        'category': 'length',
+    }, 'structuredContent must be preserved through the pipeline'
 
 
 # ---------------------------------------------------------------------------
@@ -289,12 +303,43 @@ def test_save_and_retrieve_converter_state():
 # 5. Utility function tests
 # ---------------------------------------------------------------------------
 
-def test_has_function_call_output_scans_entire_output():
-    output = [
+def test_mcp_output_dedup_only_checks_first_item():
+    """MCP outputs are prepended, so only the first item indicates prior injection.
+
+    Regression: has_function_call_output scanned the entire output, falsely
+    matching native tool calls deeper in the list and suppressing MCP output
+    injection on regeneration.
+    """
+    # existing_output with native tool call NOT at position 0
+    existing_output = [
         {'type': 'message', 'content': [{'type': 'output_text', 'text': 'hello'}]},
-        {'type': 'function_call', 'call_id': 'call_1', 'name': 'server_tool'},
+        {'type': 'function_call', 'call_id': 'call_1', 'name': 'native_tool'},
     ]
-    assert has_function_call_output(output) is True
+
+    # Should NOT be considered as having existing MCP output
+    has_existing_mcp = (
+        existing_output
+        and len(existing_output) > 0
+        and existing_output[0].get('type') == 'function_call'
+    )
+    assert not has_existing_mcp, (
+        'Native tool calls later in output must not suppress MCP injection'
+    )
+
+    # But if MCP was already prepended, first item IS a function_call
+    existing_with_mcp = [
+        {'type': 'function_call', 'call_id': 'mcp_1', 'name': 'server_tool'},
+        {'type': 'function_call_output', 'call_id': 'mcp_1', 'output': []},
+        {'type': 'message', 'content': [{'type': 'output_text', 'text': 'hello'}]},
+    ]
+    has_existing_mcp = (
+        existing_with_mcp
+        and len(existing_with_mcp) > 0
+        and existing_with_mcp[0].get('type') == 'function_call'
+    )
+    assert has_existing_mcp, (
+        'Prepended MCP output must be detected to prevent duplicates'
+    )
 
 
 def test_get_system_oauth_access_token_reads_session_token_when_header_missing():

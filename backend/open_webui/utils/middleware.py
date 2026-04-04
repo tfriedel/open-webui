@@ -526,15 +526,15 @@ def serialize_output(output: list) -> str:
     return content.strip()
 
 
-def has_function_call_output(output: Optional[list]) -> bool:
-    return bool(output and any(item.get('type') == 'function_call' for item in output))
-
-
 def normalize_mcp_tool_result(result):
+    """Normalize an MCP CallToolResult dict: raise on error, pass through otherwise.
+
+    Returns the full dict so that process_tool_result can extract both
+    the content array and structuredContent.
+    """
     if isinstance(result, dict):
         if result.get('isError'):
             raise Exception(result.get('content', 'MCP tool call failed'))
-        return result.get('content', result)
     return result
 
 
@@ -1073,6 +1073,14 @@ def process_tool_result(
         tool_result_files.append({'type': 'image', 'url': tool_result})
         tool_result = f'{tool_function_name}: Image file read successfully.'
 
+    # MCP tools may return a dict with 'content' list and optional
+    # 'structuredContent'.  Unwrap the content for processing but
+    # preserve structuredContent so the model and MCP Apps can see it.
+    mcp_structured_content = None
+    if isinstance(tool_result, dict) and tool_type == 'mcp' and isinstance(tool_result.get('content'), list):
+        mcp_structured_content = tool_result.get('structuredContent')
+        tool_result = tool_result['content']
+
     if isinstance(tool_result, list):
         if tool_type == 'mcp':  # MCP
             tool_response = []
@@ -1119,6 +1127,11 @@ def process_tool_result(
 
     if isinstance(tool_result, list):
         tool_result = {'results': tool_result}
+
+    # Re-attach structuredContent from the MCP envelope so the model
+    # and MCP Apps can access it alongside the extracted text.
+    if mcp_structured_content is not None and isinstance(tool_result, dict):
+        tool_result['structuredContent'] = mcp_structured_content
 
     if isinstance(tool_result, dict) or isinstance(tool_result, list):
         tool_result = json.dumps(tool_result, indent=2, ensure_ascii=False)
@@ -3509,11 +3522,17 @@ async def streaming_chat_response_handler(response, ctx):
 
             # Prepend MCP tool call items from non-native function calling
             # so serialize_output() includes them in the rendered content.
-            # Skip if existing_output already includes a function_call
-            # item (avoids duplicates on message regeneration).
+            # Skip if existing_output already starts with a function_call
+            # item — MCP outputs are always prepended, so only the first
+            # item indicates prior injection. Checking deeper would falsely
+            # match native tool calls and suppress MCP output on regeneration.
             mcp_tool_outputs = metadata.pop('mcp_tool_outputs', [])
             if mcp_tool_outputs:
-                has_existing_mcp = has_function_call_output(existing_output)
+                has_existing_mcp = (
+                    existing_output
+                    and len(existing_output) > 0
+                    and existing_output[0].get('type') == 'function_call'
+                )
                 if not has_existing_mcp:
                     output = mcp_tool_outputs + output
 
