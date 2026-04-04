@@ -27,6 +27,7 @@
 	export let isMcpApp = false; // true only when this iframe hosts an MCP App
 	export let serverId: string | null = null; // MCP server ID for relaying tool calls
 	export let toolResult: string | null = null; // MCP tool result text to send after tool-input
+	export let iframeAllow: string | null = null; // iframe allow attribute for permissions policy
 
 	let iframe: HTMLIFrameElement | null = null;
 	let iframeSrc: string | null = null;
@@ -180,8 +181,7 @@ window.Chart = parent.Chart; // Chart previously assigned on parent
 						protocolVersion: data?.params?.protocolVersion || '2026-01-26',
 						hostInfo: { name: 'Open WebUI', version: '1.0.0' },
 						hostCapabilities: {
-							serverTools: { listChanged: false },
-							updateModelContext: { text: {} }
+							serverTools: { listChanged: false }
 						},
 						hostContext: {
 							containerDimensions: { height: 600 }
@@ -245,8 +245,7 @@ window.Chart = parent.Chart; // Chart previously assigned on parent
 		}
 
 		// MCP Apps: relay tools/call to the backend MCP API,
-		// handle ui/update-model-context, or return error for
-		// other unsupported JSON-RPC requests.
+		// or return error for unsupported JSON-RPC requests.
 		if (
 			isMcpApp &&
 			data?.jsonrpc === '2.0' &&
@@ -323,19 +322,6 @@ window.Chart = parent.Chart; // Chart previously assigned on parent
 						'*'
 					);
 				}
-			} else if (data.method === 'ui/update-model-context') {
-				const content = data.params?.content || [];
-				const textParts = content
-					.filter((c: { type: string; text?: string }) => c.type === 'text' && c.text)
-					.map((c: { type: string; text?: string }) => c.text as string);
-				const contextText = textParts.join('\n');
-				if (contextText) {
-					dispatch('modelcontext', { text: contextText });
-				}
-				iframe.contentWindow?.postMessage(
-					{ jsonrpc: '2.0', id: data.id, result: {} },
-					'*'
-				);
 			} else {
 				iframe.contentWindow?.postMessage(
 					{
@@ -411,6 +397,7 @@ window.Chart = parent.Chart; // Chart previously assigned on parent
 		width="100%"
 		frameborder="0"
 		{sandbox}
+		allow={iframeAllow}
 		{allowFullscreen}
 		on:load={onLoad}
 	/>

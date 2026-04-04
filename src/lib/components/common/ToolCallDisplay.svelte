@@ -19,7 +19,7 @@
 	import FullHeightIframe from './FullHeightIframe.svelte';
 	import { settings } from '$lib/stores';
 	import { resolveMcpApp, readResource } from '$lib/apis/mcp';
-	import { createAppInstance, addApp, updateAppModelContext, removeApp } from '$lib/stores/mcpApps';
+	import { createAppInstance, addApp, removeApp } from '$lib/stores/mcpApps';
 
 	/** Escape a value for safe embedding inside a <script> tag (prevents `</script>` injection). */
 	function safeJsonStringify(value: unknown): string {
@@ -103,6 +103,7 @@
 	let mcpInstanceId: string | null = null;
 	let mcpLoading = false;
 	let mcpError: string | null = null;
+	let mcpPermissions: Record<string, unknown> | null = null;
 
 	// Resolve whether this tool has an MCP App UI (via backend lookup, no middleware needed)
 	let mcpChecked = false;
@@ -146,6 +147,8 @@
 			});
 			mcpInstanceId = instance.instanceId;
 			addApp(instance);
+
+			mcpPermissions = resource.permissions ?? null;
 
 			let html = resource.content || '';
 
@@ -260,11 +263,16 @@
 					allowForms={$settings?.iframeSandboxAllowForms ?? false}
 					allowSameOrigin={$settings?.iframeSandboxAllowSameOrigin ?? false}
 					allowPopups={true}
-					on:modelcontext={(e) => {
-						if (mcpInstanceId) {
-							updateAppModelContext(mcpInstanceId, e.detail.text);
-						}
-					}}
+					iframeAllow={mcpPermissions
+						? [
+								mcpPermissions.camera && 'camera',
+								mcpPermissions.microphone && 'microphone',
+								mcpPermissions.geolocation && 'geolocation',
+								mcpPermissions.clipboardWrite && 'clipboard-write'
+							]
+								.filter(Boolean)
+								.join('; ') || null
+						: null}
 				/>
 			{/if}
 		</div>

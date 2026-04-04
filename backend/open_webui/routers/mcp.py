@@ -184,13 +184,14 @@ async def read_resource(
         if not result:
             raise HTTPException(status_code=404, detail="Resource not found")
 
-        content = ""
+        content_parts = []
         mime_type = "text/html"
         for item in result.get("contents", []):
             if item.get("text"):
-                content = item.get("text", "")
+                content_parts.append(item["text"])
             if item.get("mimeType"):
-                mime_type = item.get("mimeType")
+                mime_type = item["mimeType"]
+        content = "".join(content_parts)
 
         # Populate CSP and permissions from the tool's _meta.ui if present
         csp_data = ui_meta.get("csp") if ui_meta else None
@@ -220,7 +221,12 @@ async def call_tool(
     body: CallToolRequest,
     user: UserModel = Depends(get_verified_user),
 ):
-    """Call a tool on an MCP server (relayed from an app iframe)."""
+    """Call a tool on an MCP server (relayed from an app iframe).
+
+    Per the MCP Apps spec, apps with serverTools capability may call any
+    tool on their server. Access is scoped to the server (validated by
+    _get_mcp_client) and the authenticated user, not individual tools.
+    """
     client = await _get_mcp_client(request, body.server_id, user)
 
     try:
