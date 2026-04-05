@@ -152,6 +152,30 @@
 
 			let html = resource.content || '';
 
+			// Rewrite ui:// asset references so the browser can resolve them.
+			// MCP apps may reference scripts, stylesheets, or images via ui://
+			// URIs that browsers cannot resolve natively. Fetch each referenced
+			// resource and inline it (data URI for binary, inline content for
+			// text) so multi-file app bundles render correctly.
+			const uiUriPattern = /(?:src|href)=["'](ui:\/\/[^"']+)["']/g;
+			const uiUris = [...new Set([...html.matchAll(uiUriPattern)].map((m) => m[1]))];
+			for (const uri of uiUris) {
+				try {
+					const sub = await readResource(token, mcpApp.serverId, uri);
+					const mime = sub.mimeType || 'application/octet-stream';
+					if (mime.startsWith('text/') || mime.includes('javascript') || mime.includes('json') || mime.includes('css')) {
+						// Text content: create blob URL
+						const blob = new Blob([sub.content], { type: mime });
+						html = html.replaceAll(uri, URL.createObjectURL(blob));
+					} else {
+						// Binary: base64 data URI
+						html = html.replaceAll(uri, `data:${mime};base64,${btoa(sub.content)}`);
+					}
+				} catch (e) {
+					console.warn(`Failed to resolve ui:// resource: ${uri}`, e);
+				}
+			}
+
 			// Inject tool data globals, server ID, and a height reporter.
 			// tool-result and tool-args are set as globals for immediate access;
 			// tool-result is also sent from the parent (FullHeightIframe) via

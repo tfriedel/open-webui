@@ -48,6 +48,7 @@
 		showFileNavDir,
 		chatRequestQueues
 	} from '$lib/stores';
+	import { mcpApps } from '$lib/stores/mcpApps';
 
 	import { WEBUI_API_BASE_URL } from '$lib/constants';
 
@@ -2169,6 +2170,24 @@
 				};
 			})
 			.filter((message) => message?.role === 'user' || message?.content?.trim());
+
+		// Inject live MCP App model context so the LLM can see app state.
+		// Apps update this via ui/update-model-context → mcpApps store.
+		const activeApps = get(mcpApps);
+		if (activeApps.size > 0) {
+			const contextParts: string[] = [];
+			for (const [, app] of activeApps) {
+				if (app.modelContext) {
+					contextParts.push(`[${app.toolName}] ${app.modelContext}`);
+				}
+			}
+			if (contextParts.length > 0) {
+				messages.push({
+					role: 'system',
+					content: `Active MCP App state:\n${contextParts.join('\n')}`
+				});
+			}
+		}
 
 		const toolIds = [];
 		const toolServerIds = [];

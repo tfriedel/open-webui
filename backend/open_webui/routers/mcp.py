@@ -15,6 +15,8 @@ from open_webui.models.users import UserModel
 from open_webui.utils.mcp.client import MCPClient
 from open_webui.utils.mcp.models import MCPAppResource, MCPToolResult
 from open_webui.utils.access_control import has_connection_access
+from open_webui.env import ENABLE_FORWARD_USER_INFO_HEADERS
+from open_webui.utils.headers import include_user_info_headers
 
 log = logging.getLogger(__name__)
 
@@ -124,6 +126,12 @@ async def _get_mcp_client(
                 headers[header.get("key", "")] = header.get("value", "")
         elif isinstance(connection_headers, dict):
             headers.update(connection_headers)
+
+    # Forward user/session info headers when enabled, matching the
+    # middleware path so MCP servers see consistent headers regardless
+    # of whether the call comes from the model or from an app iframe.
+    if ENABLE_FORWARD_USER_INFO_HEADERS and user:
+        headers = include_user_info_headers(headers, user)
 
     client = MCPClient()
     try:
