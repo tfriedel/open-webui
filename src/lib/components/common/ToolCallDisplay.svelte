@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { decode } from 'html-entities';
 	import { v4 as uuidv4 } from 'uuid';
+	import { onMount, onDestroy } from 'svelte';
 
 	import { getContext } from 'svelte';
 	const i18n = getContext('i18n');
@@ -17,6 +18,13 @@
 	import Image from './Image.svelte';
 	import FullHeightIframe from './FullHeightIframe.svelte';
 	import { settings } from '$lib/stores';
+	import { resolveMcpApp, readResource } from '$lib/apis/mcp';
+	import { createAppInstance, addApp, removeApp } from '$lib/stores/mcpApps';
+
+	// Escape a value for safe embedding inside a script tag (prevents closing-tag injection).
+	function safeJsonStringify(value: unknown): string {
+		return JSON.stringify(value).replace(/</g, '\\u003c');
+	}
 
 	export let id: string = '';
 	export let attributes: {
@@ -85,10 +93,215 @@
 
 	$: parsedArgs = parseArguments(args);
 	$: parsedResult = parseJSONString(result);
+
+	// MCP App state
+	let mcpApp: {
+		resourceUri: string;
+		serverId: string;
+	} | null = null;
+	let mcpEmbedHtml: string | null = null;
+	let mcpInstanceId: string | null = null;
+	let mcpLoading = false;
+	let mcpError: string | null = null;
+	let mcpPermissions: Record<string, unknown> | null = null;
+
+	// Resolve whether this tool has an MCP App UI (via backend lookup, no middleware needed)
+	let mcpChecked = false;
+	$: if (isDone && attributes?.name && !mcpApp && !mcpChecked) {
+		mcpChecked = true;
+		const token = localStorage.token;
+		if (token) {
+			resolveMcpApp(token, attributes.name)
+				.then((resolved) => {
+					if (resolved) {
+						mcpApp = resolved;
+					}
+				})
+				.catch(() => {
+					// Not an MCP app tool, ignore
+				});
+		}
+	}
+
+	// Fetch MCP resource and prepare embed HTML
+	async function loadMcpResource() {
+		if (!mcpApp) return;
+
+		mcpLoading = true;
+		mcpError = null;
+
+		try {
+			const token = localStorage.token;
+			if (!token) {
+				throw new Error('No auth token available');
+			}
+
+			const resource = await readResource(token, mcpApp.serverId, mcpApp.resourceUri);
+
+			// Create store entry for model context tracking
+			const instance = createAppInstance({
+				serverId: mcpApp.serverId,
+				toolName: attributes.name || 'MCP App',
+				resource: resource,
+				toolCallId: attributes.id
+			});
+			mcpInstanceId = instance.instanceId;
+			addApp(instance);
+
+			mcpPermissions = resource.permissions ?? null;
+
+			let html = resource.content || '';
+
+			// Rewrite ui:// asset references so the browser can resolve them.
+			// MCP apps may reference scripts, stylesheets, or images via ui://
+			// URIs that browsers cannot resolve natively. Fetch each referenced
+			// resource and inline it (data URI for binary, inline content for
+			// text) so multi-file app bundles render correctly.
+			const uiUriPattern = /(?:src|href)=["'](ui:\/\/[^"']+)["']/g;
+			const uiUris = [...new Set([...html.matchAll(uiUriPattern)].map((m) => m[1]))];
+			for (const uri of uiUris) {
+				try {
+					const sub = await readResource(token, mcpApp.serverId, uri);
+					const mime = sub.mimeType || 'application/octet-stream';
+					if (mime.startsWith('text/') || mime.includes('javascript') || mime.includes('json') || mime.includes('css')) {
+						// Text content: create blob URL
+						const blob = new Blob([sub.content], { type: mime });
+						html = html.replaceAll(uri, URL.createObjectURL(blob));
+					} else {
+						// Binary: base64 data URI
+						html = html.replaceAll(uri, `data:${mime};base64,${btoa(sub.content)}`);
+					}
+				} catch (e) {
+					console.warn(`Failed to resolve ui:// resource: ${uri}`, e);
+				}
+			}
+
+			// Inject tool data globals, server ID, and a height reporter.
+			// tool-result and tool-args are set as globals for immediate access;
+			// tool-result is also sent from the parent (FullHeightIframe) via
+			// postMessage after init, for SDK transports that expect it.
+			//
+			// Height reporter: The SDK's autoResize relies on ResizeObserver on
+			// html/body, but apps using overflow:hidden clamp body size to the
+			// viewport, so ResizeObserver never fires after render. We inject a
+			// MutationObserver on #root that sends the actual content height to
+			// the parent when the app renders.
+			const dataScript =
+				`<script>` +
+				`window.__MCP_TOOL_RESULT__=${safeJsonStringify(result || '')};` +
+				`window.__MCP_TOOL_ARGS__=${safeJsonStringify(args || '{}')};` +
+				`window.__MCP_SERVER_ID__=${safeJsonStringify(mcpApp.serverId)};` +
+				// Height reporter: observe #root for content changes and report height
+				`(function(){` +
+				`var lastH=0;` +
+				`function report(){` +
+				`var el=document.getElementById("root")||document.body;` +
+				`var h=Math.max(el.scrollHeight,el.offsetHeight);` +
+				`if(h>0&&h!==lastH){` +
+				`lastH=h;` +
+				`window.parent.postMessage({type:"iframe:height",height:h},"*");` +
+				`}` +
+				`}` +
+				`var target=document.getElementById("root");` +
+				`if(target){` +
+				`new MutationObserver(function(){requestAnimationFrame(report)})` +
+				`.observe(target,{childList:true,subtree:true,attributes:true});` +
+				`}else{` +
+				`document.addEventListener("DOMContentLoaded",function(){` +
+				`var t=document.getElementById("root");` +
+				`if(t)new MutationObserver(function(){requestAnimationFrame(report)})` +
+				`.observe(t,{childList:true,subtree:true,attributes:true});` +
+				`});` +
+				`}` +
+				`report();` +
+				`})();` +
+				`<\/script>`;
+
+			if (html.includes('<head>')) {
+				html = html.replace('<head>', '<head>\n' + dataScript);
+			} else {
+				html = dataScript + html;
+			}
+
+			mcpEmbedHtml = html;
+		} catch (e) {
+			console.error('Failed to load MCP resource:', e);
+			mcpError = String(e);
+		} finally {
+			mcpLoading = false;
+		}
+	}
+
+	// Load resource when component mounts if mcpApp is present
+	onMount(() => {
+		if (mcpApp && isDone) {
+			loadMcpResource();
+		}
+	});
+
+	onDestroy(() => {
+		if (mcpInstanceId) {
+			removeApp(mcpInstanceId);
+		}
+	});
+
+	// Also react to mcpApp changes
+	$: if (mcpApp && isDone && !mcpEmbedHtml && !mcpLoading && !mcpError) {
+		loadMcpResource();
+	}
 </script>
 
 <div {id} class={className}>
-	{#if !grouped && embeds && Array.isArray(embeds) && embeds.length > 0}
+	{#if mcpApp && isDone}
+		<!-- MCP App Mode: Show MCP App UI -->
+		<div class="py-1 w-full">
+			<div class="w-full text-xs text-gray-500 mb-2">
+				<div class="">
+					{attributes.name}
+				</div>
+			</div>
+
+			{#if mcpLoading}
+				<div
+					class="flex items-center justify-center p-4 text-gray-500 border border-gray-200 dark:border-gray-700 rounded-lg"
+				>
+					<Spinner className="size-4 mr-2" />
+					<span>{$i18n.t('Loading MCP App...')}</span>
+				</div>
+			{:else if mcpError}
+				<div
+					class="p-4 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 rounded-lg border border-red-200 dark:border-red-800"
+				>
+					<strong>{$i18n.t('Failed to load app')}:</strong>
+					{mcpError}
+				</div>
+			{:else if mcpEmbedHtml}
+				<FullHeightIframe
+					src={mcpEmbedHtml}
+					{args}
+					toolResult={typeof parsedResult === 'object' ? JSON.stringify(parsedResult) : String(parsedResult ?? '')}
+					isMcpApp={true}
+					serverId={mcpApp?.serverId ?? null}
+					mcpInstanceId={mcpInstanceId}
+					initialHeight={600}
+					allowScripts={true}
+					allowForms={$settings?.iframeSandboxAllowForms ?? false}
+					allowSameOrigin={$settings?.iframeSandboxAllowSameOrigin ?? false}
+					allowPopups={true}
+					iframeAllow={mcpPermissions
+						? [
+								mcpPermissions.camera && 'camera',
+								mcpPermissions.microphone && 'microphone',
+								mcpPermissions.geolocation && 'geolocation',
+								mcpPermissions.clipboardWrite && 'clipboard-write'
+							]
+								.filter(Boolean)
+								.join('; ') || null
+						: null}
+				/>
+			{/if}
+		</div>
+	{:else if !grouped && embeds && Array.isArray(embeds) && embeds.length > 0}
 		<!-- Embed Mode: Show iframes without collapsible behavior -->
 		<div class="py-1 w-full cursor-pointer">
 			<div class="w-full text-xs text-gray-500">

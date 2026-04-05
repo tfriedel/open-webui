@@ -2,8 +2,6 @@ import asyncio
 from typing import Optional
 from contextlib import AsyncExitStack
 
-import anyio
-
 from mcp import ClientSession
 from mcp.client.auth import OAuthClientProvider, TokenStorage
 from mcp.client.streamable_http import streamablehttp_client
@@ -38,31 +36,32 @@ class MCPClient:
         self.exit_stack = None
 
     async def connect(self, url: str, headers: Optional[dict] = None):
-        async with AsyncExitStack() as exit_stack:
-            try:
-                if AIOHTTP_CLIENT_SESSION_TOOL_SERVER_SSL:
-                    self._streams_context = streamablehttp_client(url, headers=headers)
-                else:
-                    self._streams_context = streamablehttp_client(
-                        url,
-                        headers=headers,
-                        httpx_client_factory=create_insecure_httpx_client,
-                    )
+        exit_stack = AsyncExitStack()
+        await exit_stack.__aenter__()
+        try:
+            if AIOHTTP_CLIENT_SESSION_TOOL_SERVER_SSL:
+                self._streams_context = streamablehttp_client(url, headers=headers)
+            else:
+                self._streams_context = streamablehttp_client(
+                    url,
+                    headers=headers,
+                    httpx_client_factory=create_insecure_httpx_client,
+                )
 
-                transport = await exit_stack.enter_async_context(self._streams_context)
-                read_stream, write_stream, _ = transport
+            transport = await exit_stack.enter_async_context(self._streams_context)
+            read_stream, write_stream, _ = transport
 
-                self._session_context = ClientSession(read_stream, write_stream)  # pylint: disable=W0201
+            self._session_context = ClientSession(read_stream, write_stream)  # pylint: disable=W0201
 
-                self.session = await exit_stack.enter_async_context(self._session_context)
-                with anyio.fail_after(10):
-                    await self.session.initialize()
-                self.exit_stack = exit_stack.pop_all()
-            except Exception as e:
-                await asyncio.shield(self.disconnect())
-                raise e
+            self.session = await exit_stack.enter_async_context(self._session_context)
+            async with asyncio.timeout(30):
+                await self.session.initialize()
+            self.exit_stack = exit_stack
+        except Exception as e:
+            await asyncio.shield(exit_stack.aclose())
+            raise e
 
-    async def list_tool_specs(self) -> Optional[dict]:
+    async def list_tool_specs(self) -> list[dict]:
         if not self.session:
             raise RuntimeError('MCP client is not connected.')
 
@@ -79,7 +78,13 @@ class MCPClient:
             # TODO: handle outputSchema if needed
             outputSchema = getattr(tool, 'outputSchema', None)
 
-            tool_specs.append({'name': name, 'description': description, 'parameters': inputSchema})
+            spec = {'name': name, 'description': description, 'parameters': inputSchema}
+
+            # Preserve _meta (e.g. ui.resourceUri for MCP Apps)
+            if tool.meta:
+                spec['_meta'] = tool.meta
+
+            tool_specs.append(spec)
 
         return tool_specs
 
@@ -91,13 +96,7 @@ class MCPClient:
         if not result:
             raise Exception('No result returned from MCP tool call.')
 
-        result_dict = result.model_dump(mode='json')
-        result_content = result_dict.get('content', {})
-
-        if result.isError:
-            raise Exception(result_content)
-        else:
-            return result_content
+        return result.model_dump(mode='json')
 
     async def list_resources(self, cursor: Optional[str] = None) -> Optional[dict]:
         if not self.session:
@@ -125,7 +124,8 @@ class MCPClient:
 
     async def disconnect(self):
         # Clean up and close the session
-        await self.exit_stack.aclose()
+        if self.exit_stack:
+            await self.exit_stack.aclose()
 
     async def __aenter__(self):
         await self.exit_stack.__aenter__()

@@ -526,6 +526,18 @@ def serialize_output(output: list) -> str:
     return content.strip()
 
 
+def normalize_mcp_tool_result(result):
+    """Normalize an MCP CallToolResult dict: raise on error, pass through otherwise.
+
+    Returns the full dict so that process_tool_result can extract both
+    the content array and structuredContent.
+    """
+    if isinstance(result, dict):
+        if result.get('isError'):
+            raise Exception(result.get('content', 'MCP tool call failed'))
+    return result
+
+
 def deep_merge(target, source):
     """
     Merge source into target recursively (returning new structure).
@@ -1061,6 +1073,14 @@ def process_tool_result(
         tool_result_files.append({'type': 'image', 'url': tool_result})
         tool_result = f'{tool_function_name}: Image file read successfully.'
 
+    # MCP tools may return a dict with 'content' list and optional
+    # 'structuredContent'.  Unwrap the content for processing but
+    # preserve structuredContent so the model and MCP Apps can see it.
+    mcp_structured_content = None
+    if isinstance(tool_result, dict) and tool_type == 'mcp' and isinstance(tool_result.get('content'), list):
+        mcp_structured_content = tool_result.get('structuredContent')
+        tool_result = tool_result['content']
+
     if isinstance(tool_result, list):
         if tool_type == 'mcp':  # MCP
             tool_response = []
@@ -1107,6 +1127,11 @@ def process_tool_result(
 
     if isinstance(tool_result, list):
         tool_result = {'results': tool_result}
+
+    # Re-attach structuredContent from the MCP envelope so the model
+    # and MCP Apps can access it alongside the extracted text.
+    if mcp_structured_content is not None and isinstance(tool_result, dict):
+        tool_result['structuredContent'] = mcp_structured_content
 
     if isinstance(tool_result, dict) or isinstance(tool_result, list):
         tool_result = json.dumps(tool_result, indent=2, ensure_ascii=False)
@@ -1232,6 +1257,7 @@ async def chat_completion_tools_handler(
 
     skip_files = False
     sources = []
+    mcp_tool_outputs = []
 
     specs = [tool['spec'] for tool in tools.values()]
     tools_specs = json.dumps(specs, ensure_ascii=False)
@@ -1342,6 +1368,28 @@ async def chat_completion_tools_handler(
                             }
                         )
 
+                # Collect MCP tool call output for non-native mode.
+                # These items are prepended to the streaming handler's output
+                # so serialize_output() includes the <details> tag, which lets
+                # ToolCallDisplay render and resolve MCP App UIs.
+                if tool_type == 'mcp':
+                    call_id = str(uuid4())
+                    result_text = json.dumps(tool_result) if tool_result else ''
+                    mcp_tool_outputs.extend([
+                        {
+                            'type': 'function_call',
+                            'call_id': call_id,
+                            'name': tool_function_name,
+                            'arguments': json.dumps(tool_function_params) if isinstance(tool_function_params, dict) else str(tool_function_params),
+                        },
+                        {
+                            'type': 'function_call_output',
+                            'call_id': call_id,
+                            'output': [{'type': 'input_text', 'text': result_text}],
+                            'status': 'completed',
+                        },
+                    ])
+
                 if tool_result:
                     tool = tools[tool_function_name]
                     tool_id = tool.get('tool_id', '')
@@ -1387,7 +1435,7 @@ async def chat_completion_tools_handler(
     if skip_files and 'files' in body.get('metadata', {}):
         del body['metadata']['files']
 
-    return body, {'sources': sources}
+    return body, {'sources': sources, 'mcp_tool_outputs': mcp_tool_outputs}
 
 
 async def chat_memory_handler(request: Request, form_data: dict, extra_params: dict, user):
@@ -2553,10 +2601,11 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
                             def make_tool_function(client, function_name):
                                 async def tool_function(**kwargs):
-                                    return await client.call_tool(
+                                    result = await client.call_tool(
                                         function_name,
                                         function_args=kwargs,
                                     )
+                                    return normalize_mcp_tool_result(result)
 
                                 return tool_function
 
@@ -2688,6 +2737,8 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                         request, form_data, extra_params, user, models, tools_dict
                     )
                     sources.extend(flags.get('sources', []))
+                    if flags.get('mcp_tool_outputs'):
+                        metadata['mcp_tool_outputs'] = flags['mcp_tool_outputs']
                 except Exception as e:
                     log.exception(e)
 
@@ -3468,6 +3519,22 @@ async def streaming_chat_response_handler(response, ctx):
                     ]
                 else:
                     output = []
+
+            # Prepend MCP tool call items from non-native function calling
+            # so serialize_output() includes them in the rendered content.
+            # Skip if existing_output already starts with a function_call
+            # item — MCP outputs are always prepended, so only the first
+            # item indicates prior injection. Checking deeper would falsely
+            # match native tool calls and suppress MCP output on regeneration.
+            mcp_tool_outputs = metadata.pop('mcp_tool_outputs', [])
+            if mcp_tool_outputs:
+                has_existing_mcp = (
+                    existing_output
+                    and len(existing_output) > 0
+                    and existing_output[0].get('type') == 'function_call'
+                )
+                if not has_existing_mcp:
+                    output = mcp_tool_outputs + output
 
             usage = None
             prior_output = []

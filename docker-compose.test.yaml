@@ -1,0 +1,35 @@
+services:
+  mcp-demo:
+    build:
+      context: ../mcp_calculator_demo
+    container_name: mcp-demo
+    networks:
+      - test-net
+    ports:
+      - "8000:8000"
+
+  open-webui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        USE_OLLAMA: "false"
+    container_name: open-webui-test
+    networks:
+      - test-net
+    volumes:
+      - open-webui-test-data:/app/backend/data
+    ports:
+      - "3000:8080"
+    environment:
+      - WEBUI_SECRET_KEY=test-secret
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    depends_on:
+      - mcp-demo
+
+volumes:
+  open-webui-test-data:
+
+networks:
+  test-net:
